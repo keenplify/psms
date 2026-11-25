@@ -125,6 +125,13 @@ pub enum Command {
     },
     /// Verify that the configured destination and running service are ready.
     Status,
+    /// Check the new server, pause the local daemon, migrate, restart and verify readiness.
+    Activate {
+        #[arg(value_enum)]
+        engine: Engine,
+        #[arg(long)]
+        connection_file: std::path::PathBuf,
+    },
     /// Copy and verify a stopped SQLite archive, then select the new authoritative database.
     Switch {
         #[arg(value_enum)]
@@ -140,7 +147,7 @@ pub enum Command {
         connection_file: std::path::PathBuf,
     },
 }
-pub async fn run(path: &Path, command: Command) -> Result<()> {
+pub async fn run(path: &Path, options: &crate::cli::ServerOptions, command: Command) -> Result<()> {
     match command {
         Command::DesktopPage { page, starred } => {
             let target = runtime(path)
@@ -155,6 +162,24 @@ pub async fn run(path: &Path, command: Command) -> Result<()> {
             if !target.edit(&id.to_string(), Some(value)).await? {
                 return Err("message is unavailable".into());
             }
+        }
+        Command::Activate {
+            engine,
+            connection_file,
+        } => {
+            Target::load(engine, &connection_file)?.verify().await?;
+            let running = crate::daemon::running_address(path)
+                .map_err(|_| "could not inspect local daemon")?
+                .is_some();
+            if running {
+                crate::daemon::stop(path).map_err(|_| "could not stop local daemon")?;
+            }
+            let switched = migrate::switch(path, engine, &connection_file).await;
+            if running || switched.is_ok() {
+                crate::daemon::init(path,options).map_err(|_|"could not restart pSMS; original SQLite archive retained; inspect the daemon log")?;
+            }
+            switched?;
+            return Box::pin(run(path, options, Command::Status)).await;
         }
         Command::Status => {
             let target = runtime(path).await?;

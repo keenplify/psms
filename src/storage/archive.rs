@@ -14,7 +14,19 @@ pub fn arg(s: &str) -> Value {
     Value::String(s.into())
 }
 pub async fn rows(c: &mut dyn Connection, sql: &str, args: Vec<Value>) -> Result<Vec<Json>> {
-    Ok(rbs::from_value(c.exec_decode(sql, args).await?)?)
+    let mut records = c.exec_decode(sql, args).await?;
+    if let Value::Array(items) = &mut records {
+        for item in items {
+            if let Value::Map(fields) = item {
+                for (_, value) in fields.0.iter_mut() {
+                    if let Value::Binary(bytes) = value {
+                        *value = Value::String(String::from_utf8(std::mem::take(bytes))?);
+                    }
+                }
+            }
+        }
+    }
+    Ok(rbs::from_value(records)?)
 }
 
 impl Target {

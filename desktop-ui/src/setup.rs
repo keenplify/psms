@@ -18,6 +18,58 @@ pub fn cli(path: &std::path::Path) -> std::io::Result<Command> {
     Ok(cmd)
 }
 impl Dashboard {
+    fn storage_view(&self, cx: &mut Context<Self>) -> Div {
+        if self.external {
+            return div().child(self.caption("Storage - External SQL database"));
+        }
+        let mut choices = div().h_flex().flex_wrap().gap_1();
+        for (label, engine) in [
+            ("SQLite", None),
+            ("PostgreSQL", Some("postgres")),
+            ("MySQL", Some("mysql")),
+            ("MariaDB", Some("mariadb")),
+            ("SQL Server", Some("sqlserver")),
+        ] {
+            let b = button(label, label)
+                .disabled(self.migrating)
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    s.storage_engine = engine;
+                    cx.notify();
+                }));
+            choices = choices.child(if self.storage_engine == engine {
+                b.primary()
+            } else {
+                b
+            });
+        }
+        let mut section = div()
+            .v_flex()
+            .gap_2()
+            .child(self.caption("Archive storage"))
+            .child(choices);
+        if let Some(engine) = self.storage_engine {
+            section=section.child(self.caption("Use a private connection file for an empty database. pSMS copies and verifies your archive and keeps the original SQLite file.")).child(Input::new(&self.storage_file)).child(button("activate","Verify and switch").disabled(self.migrating).on_click(cx.listener(move|s,_,_,cx|{
+                let file=s.storage_file.read(cx).value().trim().to_string();
+                if file.is_empty(){s.notice="Enter the path to your connection file.".into();cx.notify();return;}
+                let path=s.path.clone();
+                s.migrating=true;s.notice="Checking the server and copying the archive...".into();cx.notify();
+                cx.spawn(async move |this,cx|{
+                    let result=cx.background_executor().spawn(async move{
+                        cli(&path).and_then(|mut cmd|cmd.args(["storage","activate",engine,"--connection-file",&file]).output())
+                    }).await;
+                    let _=this.update(cx,|s,cx|{
+                        s.migrating=false;
+                        if result.is_ok_and(|o|o.status.success()) {
+                            if cli(&s.path).and_then(|mut cmd|cmd.arg("desktop").spawn()).is_ok(){cx.quit();return;}
+                            s.notice="Migration verified. Reopen pSMS to load the new database.".into();
+                        } else {s.notice="Could not activate the database. Check the connection file and run psms storage status. The source archive was retained.".into();}
+                        cx.notify();
+                    });
+                }).detach();
+            })));
+        }
+        section
+    }
     pub fn open_setup(&mut self, cx: &mut Context<Self>) {
         self.step = if self.folder.is_some() { 2 } else { 0 };
         self.show(Screen::Setup, cx)
@@ -129,7 +181,7 @@ impl Dashboard {
             .gap_4()
             .child(self.caption(format!("Step {} of 4", self.step + 1)));
         match self.step{
-    0=>card=card.child(self.heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(self.caption(format!("Archive on this computer: {}",self.path.display())))
+    0=>card=card.child(self.heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(self.storage_view(cx))
         .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,_,cx|s.save_step(1,cx))))),
     1=>card=card.child(self.heading("Connect your iPhone")).child("Enter the public HTTPS endpoint for this archive. If it’s on your computer, point a tunnel or HTTPS proxy at the local service first.")
         .child(Input::new(&self.endpoint)).child(self.caption("Use your own endpoint and upload credentials together. Android capture is coming next."))
@@ -217,6 +269,7 @@ impl Dashboard {
             .max_w(px(570.))
             .child(self.heading("Settings"))
             .child(self.caption(self.path.display().to_string()))
+            .child(self.storage_view(cx))
             .child(
                 div()
                     .h_flex()

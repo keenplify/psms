@@ -187,7 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let db_path = database_path(cli.options.database.take())?;
     if let Some(cli::Command::Storage { command }) = cli.command {
-        return storage::run(&db_path, command)
+        return storage::run(&db_path, &cli.options, command)
             .await
             .map_err(|e| e as Box<dyn Error>);
     }

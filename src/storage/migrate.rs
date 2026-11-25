@@ -43,6 +43,12 @@ pub fn lock(path: &Path) -> Result<fs::File> {
 pub async fn runtime(path: &Path) -> Result<Option<Target>> {
     let selected = sidecar(path, ".storage.json");
     if !selected.try_exists()? {
+        if sidecar(path, ".migration.json").try_exists()? {
+            return Err(
+                "migration awaiting verification; repeat storage switch with the same destination"
+                    .into(),
+            );
+        }
         return Ok(None);
     }
     let cfg: Selection = serde_json::from_slice(&fs::read(selected)?)?;
@@ -58,16 +64,6 @@ pub async fn runtime(path: &Path) -> Result<Option<Target>> {
         return Err("destination archive identity mismatch".into());
     }
     Ok(Some(target))
-}
-fn new_file(path: &Path) -> Result<fs::File> {
-    let mut opt = fs::OpenOptions::new();
-    opt.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opt.mode(0o600);
-    }
-    Ok(opt.open(path)?)
 }
 async fn copy_rows(
     db: &Connection,
@@ -115,6 +111,56 @@ async fn copy_rows(
     }
     Ok(count)
 }
+#[derive(Serialize, Deserialize)]
+struct Journal {
+    selection: Selection,
+    revision: i64,
+    previous_instance: String,
+}
+fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut tmp = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    tmp.write_all(&serde_json::to_vec(value)?)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist_noclobber(path)?;
+    Ok(())
+}
+async fn finish(path: &Path, target: &Target, journal: &Journal) -> Result<bool> {
+    let mut c = target.open().await?;
+    let meta = rows(
+        c.as_mut(),
+        "SELECT revision,instance_id FROM psms_archive WHERE id=1",
+        vec![],
+    )
+    .await?;
+    let row = meta.first().ok_or("missing archive identity")?;
+    let id = row["instance_id"]
+        .as_str()
+        .ok_or("invalid destination identity")?;
+    let revision = row["revision"]
+        .as_i64()
+        .ok_or("invalid destination revision")?;
+    if revision == 0 && id == journal.previous_instance {
+        return Ok(false);
+    }
+    if id != journal.selection.instance || revision != journal.revision {
+        return Err("destination identity or revision changed; source retained".into());
+    }
+    let stage = sidecar(path, ".migration.settings");
+    let state = sidecar(path, ".settings.sqlite3");
+    if stage.try_exists()? {
+        fs::rename(stage, &state)?;
+    }
+    if !state.is_file() {
+        return Err("missing staged local settings".into());
+    }
+    write_json(&sidecar(path, ".storage.json"), &journal.selection)?;
+    fs::remove_file(sidecar(path, ".migration.json"))?;
+    Ok(true)
+}
 pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     let file = file.canonicalize()?;
     let target = Target::load(engine, &file)?;
@@ -129,6 +175,19 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     if sidecar(path, ".storage.json").try_exists()? {
         return Err("an external archive is already selected".into());
     }
+    let journal_path = sidecar(path, ".migration.json");
+    let staging = sidecar(path, ".migration.settings");
+    if journal_path.try_exists()? {
+        let journal: Journal = serde_json::from_slice(&fs::read(&journal_path)?)?;
+        if journal.selection.engine != engine || journal.selection.connection_file != file {
+            return Err("resume with the original migration destination".into());
+        }
+        if finish(path, &target, &journal).await? {
+            println!("Verified and resumed the pending migration.");
+            return Ok(());
+        }
+        fs::remove_file(&journal_path)?;
+    }
     let mut c = target.open().await?;
     target.schema(c.as_mut()).await?;
     let mut db = if path.try_exists()? {
@@ -139,13 +198,17 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     let src = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let migrated = src.table_exists(None, "messages")?;
     let state = sidecar(path, ".settings.sqlite3");
-    let staging = sidecar(path, &format!(".{}.staging", uuid::Uuid::new_v4()));
+
     if state.try_exists()? {
         return Err("existing settings database requires review before switching".into());
     }
-    new_file(&staging)?;
+    let stage_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let working = tempfile::NamedTempFile::new_in(stage_dir)?;
     // Only configuration is retained locally. Copy control tables explicitly.
-    let prefs = Connection::open(&staging)?;
+    let prefs = Connection::open(working.path())?;
     for table in [
         "local_credentials",
         "desktop_setup",
@@ -188,17 +251,17 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
         vec![],
     )
     .await?;
-    if !rows(
+    let initial = rows(
         c.as_mut(),
         "SELECT instance_id FROM psms_archive WHERE id=1 AND revision=1",
         vec![],
     )
-    .await?
-    .is_empty()
-    {
-    } else {
-        return Err("destination is already in use; choose a fresh pSMS database".into());
-    }
+    .await?;
+    let previous = initial
+        .first()
+        .and_then(|r| r["instance_id"].as_str())
+        .ok_or("destination is already in use; choose a fresh database")?
+        .to_owned();
     let mut max_position = 1;
     if migrated {
         if src.table_exists(None, "replicated_messages")? {
@@ -280,43 +343,28 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
             }
         }
     }
+    let instance = uuid::Uuid::new_v4().to_string();
     c.exec(
-        "UPDATE psms_archive SET revision=? WHERE id=1",
-        vec![Value::I64(max_position)],
+        "UPDATE psms_archive SET revision=?,instance_id=? WHERE id=1",
+        vec![max_position.into(), arg(&instance)],
     )
     .await?;
-    let identity = rows(
-        c.as_mut(),
-        "SELECT instance_id FROM psms_archive WHERE id=1",
-        vec![],
-    )
-    .await?[0]["instance_id"]
-        .as_str()
-        .ok_or("missing archive identity")?
-        .to_owned();
+    let journal = Journal {
+        selection: Selection {
+            engine,
+            connection_file: file,
+            instance,
+        },
+        previous_instance: previous,
+        revision: max_position,
+    };
+    working.as_file().sync_all()?;
+    working.persist(&staging)?;
+    write_json(&journal_path, &journal)?;
     c.commit().await?;
-    let mut fresh = target.open().await?;
-    let meta = rows(
-        fresh.as_mut(),
-        "SELECT revision FROM psms_archive WHERE instance_id=?",
-        vec![arg(&identity)],
-    )
-    .await?;
-    if meta.first().and_then(|v| v["revision"].as_i64()) != Some(max_position) {
-        return Err("destination did not pass the post-commit reconnect check".into());
+    if !finish(path, &target, &journal).await? {
+        return Err("could not confirm commit; repeat storage switch".into());
     }
-    let selected = sidecar(path, ".storage.json");
-    let tmp = sidecar(&staging, ".json");
-    let mut f = new_file(&tmp)?;
-    f.write_all(&serde_json::to_vec(&Selection {
-        engine,
-        connection_file: file,
-        instance: identity,
-    })?)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(staging, state)?;
-    fs::rename(tmp, selected)?;
     src.commit()?;
     println!(
         "Destination committed and verified on a new connection. Start pSMS and verify /readyz before retiring the previous SQLite archive. The source file was retained."

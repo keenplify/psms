@@ -9,6 +9,7 @@ name = "psms"
 path = "src/main.rs"
 
 [dependencies]
+tempfile = "3"
 aes-gcm = "0.10"
 rmcp = { version = "3.11", features = ["transport-io"] }
 url = "2"

@@ -33,6 +33,9 @@ struct Dashboard {
     db: Connection,
     path: PathBuf,
     external: bool,
+    storage_engine: Option<&'static str>,
+    storage_file: Entity<InputState>,
+    migrating: bool,
     external_page: Option<(i64, bool, Vec<archive::Record>)>,
     external_newest: i64,
     screen: Screen,
@@ -727,7 +730,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         })
                         .detach();
+                        let storage_file=cx.new(|cx|InputState::new(window,cx).placeholder("Path to private connection file"));
                         let mut s = Dashboard {
+                            storage_engine:None,storage_file,migrating:false,
                             db,
                             external, external_page:None, external_newest:0,
                             path,
