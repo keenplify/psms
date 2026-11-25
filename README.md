@@ -99,7 +99,7 @@ lefthook install
 
 Before each commit, the hook checks Rust formatting and runs Clippy across all Cargo targets with warnings treated as errors. Run `cargo fmt --all` to apply formatting, or `lefthook run pre-commit` to run both checks manually.
 
-Run `cargo build --locked --release` on the target system. CI builds and tests Linux x86-64 and ARM64 (GNU), Windows x86-64 (MSVC), and macOS Intel and Apple silicon. Each job uploads its native executable. Linux binaries inherit the build runner's system library requirements.
+Run `cargo build --locked --release` on the target system. CI builds and tests Linux x86-64 and ARM64 (GNU), Windows x86-64 (MSVC), and Intel macOS. Each job uploads its native executable. Linux binaries inherit the build runner's system library requirements.
 
 ## License
 
