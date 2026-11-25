@@ -1,0 +1,14 @@
+/target
+.env
+*.sqlite3
+*.sqlite3-*
+
+desktop-ui/target/
+*.sqlite3.*
+private-pairing/
+archive-recovery-key.txt
+upload-token.txt
+pSMS_Encrypted.shortcut
+pSMS_Ready.shortcut
+Papamo_SMS_Encrypted_Private.shortcut
+Papamo_SMS_Encrypted_Ready.shortcut

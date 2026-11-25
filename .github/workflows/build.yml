@@ -1,0 +1,37 @@
+name: Native builds
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, ext: .exe }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: macos-15, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable
+      - run: cargo +stable test --locked --target ${{ matrix.target }}
+      - run: cargo +stable build --locked --release --target ${{ matrix.target }}
+      - name: Install GPUI Kit dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libvulkan-dev
+      - run: cargo +stable build --manifest-path desktop-ui/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python tests/smoke.py target/${{ matrix.target }}/release/psms${{ matrix.ext }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papamo-sms-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/psms${{ matrix.ext }}
+            target/${{ matrix.target }}/release/psms-desktop${{ matrix.ext }}
+
+

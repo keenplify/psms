@@ -1,0 +1,10 @@
+pre-commit:
+  jobs:
+    - name: rustfmt
+      run: cargo fmt --all -- --check
+    - name: Clippy
+      run: cargo clippy --locked --all-targets -- -D warnings
+    - name: Desktop rustfmt
+      run: cargo fmt --manifest-path desktop-ui/Cargo.toml -- --check
+    - name: Desktop Clippy
+      run: cargo clippy --manifest-path desktop-ui/Cargo.toml --locked --all-targets -- -D warnings
