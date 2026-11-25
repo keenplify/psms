@@ -12,6 +12,8 @@ pub struct Form {
     pub provider: &'static str,
     pub custom: bool,
     manual_open: bool,
+    account: Option<hosted_login::Account>,
+    signing_in: bool,
     pub busy: bool,
     pub generation: u64,
     pub hint: String,
@@ -93,6 +95,8 @@ impl Form {
             provider,
             custom,
             manual_open: false,
+            account: None,
+            signing_in: false,
             busy: false,
             generation: 0,
             hint: String::new(),
@@ -145,29 +149,65 @@ impl Dashboard {
         .detach();
     }
     pub fn connection_view(&self, cx: &mut Context<Self>) -> Div {
-        let hosted = div()
+        let card = div()
             .v_flex()
             .gap_3()
             .p_5()
             .rounded_lg()
             .border_1()
             .border_color(self.color(0xd9dfe7))
-            .bg(self.color(0xf0f3f8))
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Use your Papamo account"))
-            .child("Store up to 1,000 encrypted messages for free. Papamo runs the database and provides the HTTPS address for your phone.")
-            .child(div().child(button("papamo-login", "Sign in with Papamo")
-                .icon(IconName::Globe)
-                .primary()
-                .on_click(|_, _, cx| cx.open_url("https://www.papamo.dev/login"))))
-            .child(self.caption("Opens in your browser. Your 1.6 Competitive login works here too."));
-        let mut choices = div().v_flex().gap_3().child(hosted).child(
+            .bg(self.color(0xf0f3f8));
+        let hosted = if let Some(account) = &self.form.account {
+            card.child(self.heading(format!("Signed in as {}", account.username)))
+                .child(self.caption(match account.limit {
+                    Some(limit) => format!("{} of {limit} messages stored", account.used),
+                    None => format!("{} messages stored · Unlimited", account.used),
+                }))
+                .child(
+                    button("sign-out", "Sign out of desktop")
+                        .disabled(self.form.busy)
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            if let Some(account) = s.form.account.take() {
+                                cx.background_executor()
+                                    .spawn(async move { account.sign_out() })
+                                    .detach();
+                            }
+                            s.notice.clear();
+                            cx.notify();
+                        })),
+                )
+        } else {
+            card.child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Use your Papamo account"))
+                .child("Store up to 1,000 encrypted messages for free. Papamo runs the database and provides the HTTPS address for your phone.")
+                .child(button("papamo-login", if self.form.signing_in {"Waiting for sign-in…"} else {"Sign in with Papamo"})
+                    .icon(IconName::Globe).primary().disabled(self.form.signing_in || self.form.busy)
+                    .on_click(cx.listener(|s, _, window, cx| s.sign_in(window, cx))))
+                .child(self.caption("Sign in through your browser to return to pSMS."))
+        };
+        let signed = self.form.account.is_some();
+        let mut choices = div().v_flex().gap_3().child(hosted);
+        if signed {
+            choices = choices
+                .child(self.heading("Where should messages be stored?"))
+                .child(
+                    button("hosted-db", "Use my Papamo hosted database")
+                        .primary()
+                        .disabled(self.form.busy)
+                        .on_click(cx.listener(|s, _, _, cx| s.pair_hosted(cx))),
+                );
+        }
+        choices = choices.child(
             div().child(
                 button(
                     "manual-connection",
                     if self.form.manual_open {
                         "Hide manual setup"
                     } else {
-                        "Set up manually with a tunnel or domain"
+                        if signed {
+                            "Use my own database"
+                        } else {
+                            "Set up manually with a tunnel or domain"
+                        }
                     },
                 )
                 .icon(IconName::Network)
@@ -179,11 +219,133 @@ impl Dashboard {
             ),
         );
         if self.form.manual_open {
-            choices = choices.child(self.manual_connection_view(cx));
+            choices = choices.child(self.storage_view(cx));
+            if self.external || self.storage_engine.is_none() {
+                choices = choices.child(self.manual_connection_view(cx));
+            }
         }
         choices
     }
 
+    fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (attempt, url) = match hosted_login::Attempt::start() {
+            Ok(v) => v,
+            Err(e) => {
+                self.notice = e.into();
+                cx.notify();
+                return;
+            }
+        };
+        self.form.signing_in = true;
+        self.notice.clear();
+        cx.open_url(&url);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { attempt.wait() })
+                .await;
+            let _ = this.update_in(cx, |s, window, cx| {
+                s.form.signing_in = false;
+                match result {
+                    Ok(account) => {
+                        s.form.account = Some(account);
+                        s.form.manual_open = false;
+                        if !s.form.busy {
+                            s.screen = Screen::Setup;
+                            s.save_step(1, window, cx);
+                        }
+                        cx.activate(true);
+                        window.activate_window();
+                    }
+                    Err(e) => s.notice = e.into(),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    fn pair_hosted(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = &self.form.account else {
+            return;
+        };
+        let token = account.token.clone();
+        let folder = self
+            .path
+            .with_file_name(format!("pSMS-pairing-{}", uuid::Uuid::new_v4()));
+        self.form.busy = true;
+        self.notice = "Preparing your hosted shortcut…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { hosted_login::pair(&token, &folder).map(|_| folder) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.form.busy = false;
+                match result {
+                    Ok(folder) => {
+                        if s.db
+                            .execute(
+                                "UPDATE desktop_setup SET folder=?1,step=2 WHERE id=1",
+                                [folder.to_string_lossy().as_ref()],
+                            )
+                            .is_ok()
+                        {
+                            s.folder = Some(folder);
+                            s.step = 2;
+                            s.reached = s.reached.max(2);
+                            s.notice.clear();
+                        } else {
+                            s.notice = format!("Shortcut saved in {}", folder.display());
+                        }
+                    }
+                    Err(e) => s.notice = e.into(),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn check_hosted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(account) = &self.form.account else {
+            self.save_step(1, window, cx);
+            self.notice =
+                "Sign in to the account that owns this shortcut, then select Verify delivery."
+                    .into();
+            return;
+        };
+        let Some(folder) = self.folder.clone() else {
+            return;
+        };
+        let token = account.token.clone();
+        self.form.busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { hosted_login::verify(&token, &folder) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.form.busy = false;
+                match result {
+                    Ok(true) => {
+                        s.finish(cx);
+                        s.notice = "Delivery verified in your hosted archive.".into();
+                    }
+                    Ok(false) => {
+                        s.notice =
+                            "No new message yet. Check your phone automation, then try again."
+                                .into()
+                    }
+                    Err(e) => s.notice = e.into(),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
     fn manual_connection_view(&self, cx: &mut Context<Self>) -> Div {
         let selector = div().h_flex().flex_shrink_0().gap_2().children(
             [("ngrok", "ngrok"), ("cloudflare", "Cloudflare")]
@@ -402,6 +564,7 @@ impl Dashboard {
                         {
                             s.folder = Some(folder);
                             s.baseline = baseline;
+                            s.reached = s.reached.max(2);
                             s.step = 2;
                             s.notice = format!("Connected to {url}");
                         } else {

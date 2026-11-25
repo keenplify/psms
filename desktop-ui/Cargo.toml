@@ -1,10 +1,16 @@
 [package]
 name = "psms-desktop"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
+plist = "1.10.4"
+getrandom = "0.4.3"
+ring = "0.17"
+axum = "0.8.9"
+tokio = { version = "1", features = ["net", "rt", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 url = "2"

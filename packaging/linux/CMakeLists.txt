@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(psms VERSION 0.1.10 LANGUAGES NONE)
+project(psms VERSION 0.1.11 LANGUAGES NONE)
 if(NOT IS_ABSOLUTE "${BIN_DIR}" OR NOT LABEL MATCHES "^linux-(x64|arm64)$")
   message(FATAL_ERROR "Set BIN_DIR and LABEL for the native Linux build")
 endif()

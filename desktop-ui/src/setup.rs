@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::prelude::FluentBuilder;
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -17,7 +18,7 @@ pub fn cli(path: &std::path::Path) -> std::io::Result<Command> {
     Ok(cmd)
 }
 impl Dashboard {
-    fn storage_view(&self, cx: &mut Context<Self>) -> Div {
+    pub fn storage_view(&self, cx: &mut Context<Self>) -> Div {
         if self.external {
             return div().child(self.caption("Storage - External SQL database"));
         }
@@ -73,13 +74,14 @@ impl Dashboard {
         self.step = if self.folder.is_some() { 2 } else { 0 };
         self.show(Screen::Setup, cx)
     }
-    fn save_step(&mut self, step: u8, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn save_step(&mut self, step: u8, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .db
             .execute("UPDATE desktop_setup SET step=?1 WHERE id=1", [step])
             .is_ok()
         {
             self.step = step;
+            self.reached = self.reached.max(step);
             self.notice.clear();
             if step == 1 {
                 self.detect_domain(window, cx);
@@ -89,7 +91,7 @@ impl Dashboard {
         }
         cx.notify()
     }
-    fn finish(&mut self, cx: &mut Context<Self>) {
+    pub fn finish(&mut self, cx: &mut Context<Self>) {
         if self
             .db
             .execute("UPDATE desktop_setup SET completed=1 WHERE id=1", [])
@@ -128,8 +130,15 @@ impl Dashboard {
             .child(self.heading("Set up pSMS"));
         for (i, label) in steps.iter().enumerate() {
             let active = i == self.step as usize;
+            let reachable = i as u8 <= self.reached.max(self.step);
             side = side.child(
                 div()
+                    .id(("setup-step", i))
+                    .opacity(if reachable { 1.0 } else { 0.5 })
+                    .when(reachable && !active && !self.form.busy, |row| {
+                        row.cursor_pointer()
+                            .on_click(cx.listener(move |s, _, w, cx| s.save_step(i as u8, w, cx)))
+                    })
                     .h_flex()
                     .items_center()
                     .gap_2()
@@ -156,7 +165,7 @@ impl Dashboard {
             .gap_4()
             .child(self.caption(format!("Step {} of 4", self.step + 1)));
         match self.step{
-    0=>card=card.child(self.heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(self.storage_view(cx))
+    0=>card=card.child(self.heading("Your private message archive")).child("Your phone encrypts incoming messages before sending them to the archive you choose.")
         .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(1,w,cx))))),
     1=>card=card.child(self.heading("Connect a phone")).child(self.connection_view(cx)),
     2=>{card=card.child(self.heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
@@ -164,6 +173,11 @@ impl Dashboard {
         .child(button("command","Copy signing command").on_click(cx.listener(|s,_,_,cx|{cx.write_to_clipboard(ClipboardItem::new_string("shortcuts sign --mode anyone --input pSMS_Encrypted.shortcut --output pSMS_Ready.shortcut".into()));s.notice="Signing command copied.".into();cx.notify()}))))
         .child("Install Actions on the iPhone, import the signed shortcut, then enable a Message automation that passes its input to that shortcut.")
         .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(3,w,cx)))));},
+    3 if self.folder.as_ref().is_some_and(|f| f.join("papamo-hosted").is_file()) => {
+        card=card.child(self.heading("Verify your hosted archive"))
+            .child("Send a test message to your phone, then check that it reached your Papamo account.")
+            .child(button("verify-hosted","Check hosted archive").disabled(self.form.busy).on_click(cx.listener(|s,_,w,cx|s.check_hosted(w,cx))));
+    }
     _=>{let received=self.newest()>self.baseline;
        card=card.child(self.heading(if received{"A message arrived"}else{"Try a test message"}))
         .child(if received{"This archive received an encrypted upload since pairing. Use your recovery key to unlock its contents in the inbox."}else{"Have another phone send you a text matching your automation. This screen checks for new encrypted uploads automatically."})
@@ -171,18 +185,7 @@ impl Dashboard {
            if s.newest()>s.baseline{s.finish(cx)}else{s.notice="Waiting for a new encrypted upload. Check the endpoint and the phone automation.".into();cx.notify()}
         }))));}
     }
-        let mut footer = div().h_flex().gap_3().items_center();
-        if self.step > 0 {
-            footer = footer.child(
-                button("back", "Back")
-                    .disabled(self.form.busy)
-                    .ghost()
-                    .on_click(
-                        cx.listener(|s, _, w, cx| s.save_step(s.step.saturating_sub(1), w, cx)),
-                    ),
-            )
-        }
-        footer = footer.child(
+        let footer = div().h_flex().child(
             button("later", "Set up later")
                 .disabled(self.form.busy)
                 .ghost()

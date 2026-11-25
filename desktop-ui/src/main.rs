@@ -7,6 +7,9 @@ mod archive;
 mod connect;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
+mod hosted_login;
+#[path = "../../src/onboard.rs"]
+mod onboard;
 mod setup;
 use archive::Thread;
 use gpui_kit::{
@@ -60,6 +63,7 @@ struct Dashboard {
     unlock_box: bool,
     notice: String,
     step: u8,
+    reached: u8,
     folder: Option<PathBuf>,
     baseline: i64,
     logo: Arc<Image>,
@@ -72,7 +76,7 @@ fn button(id: &'static str, label: &'static str) -> Button {
         "disconnect" => IconName::Ban,
         "config" => IconName::Settings,
         "prev" | "back" => IconName::ChevronLeft,
-        "next" | "verify" | "later" => IconName::ChevronRight,
+        "next" | "verify" => IconName::ChevronRight,
         "copy-secret" | "command" => IconName::Copy,
         "connect" | "start" | "setup" | "prepare" | "save-hook" => IconName::Network,
         "activate" | "done" | "token-done" => IconName::Check,
@@ -661,6 +665,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
         },
     )?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS desktop_setup_progress(id INTEGER PRIMARY KEY CHECK(id=1),reached INTEGER NOT NULL);
+        INSERT OR IGNORE INTO desktop_setup_progress SELECT id,max(step,CASE WHEN folder IS NULL THEN 0 ELSE 2 END) FROM desktop_setup;
+        CREATE TRIGGER IF NOT EXISTS desktop_setup_reached AFTER UPDATE OF step ON desktop_setup BEGIN
+        UPDATE desktop_setup_progress SET reached=max(reached,NEW.step) WHERE id=NEW.id; END;")?;
+    let reached: u8 = db.query_row(
+        "SELECT reached FROM desktop_setup_progress WHERE id=1",
+        [],
+        |r| r.get(0),
+    )?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS desktop_appearance(id INTEGER PRIMARY KEY CHECK(id=1),dark INTEGER NOT NULL)")?;
     let preference = db.query_row(
         "SELECT (SELECT dark FROM desktop_appearance WHERE id=1)",
@@ -823,6 +836,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             session_key: None,
                             unlock_box: false,
                             notice: String::new(),
+                            reached,
                             step,
                             folder,
                             baseline,
