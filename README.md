@@ -165,3 +165,7 @@ psms manage theme dark
 ```
 
 The CLI prints newly issued credentials once. The GUI copies the raw token and displays it in a one-time dialog. Use `Authorization: Bearer TOKEN` in API requests.
+
+## Future hosted accounts
+
+Papamo is considering an optional paid account for people who want a managed message archive. An account would provide a stable HTTPS address, isolated encrypted storage and managed backups. Customers would sign in and pair their phone, with Papamo operating the domain, tunnel infrastructure where needed, and database. The proposed service would keep recovery keys on customer devices. Hosted accounts, quotas and pricing are still in planning. The self-hosted edition is available under the MIT license.

@@ -143,7 +143,7 @@ impl Dashboard {
         .detach();
     }
     pub fn connection_view(&self, cx: &mut Context<Self>) -> Div {
-        let selector = div().h_flex().gap_1().children(
+        let selector = div().h_flex().flex_shrink_0().gap_2().children(
             [("ngrok", "ngrok"), ("cloudflare", "Cloudflare")]
                 .into_iter()
                 .map(|(id, label)| {
@@ -187,7 +187,7 @@ impl Dashboard {
                 "Named tunnel"
             }))
             .child(checkbox);
-        let mut row = div().h_flex().gap_1().items_center();
+        let mut row = div().h_flex().items_center().gap_3().px_2().py_2();
         if self.form.custom {
             row = row.child(div().flex_1().min_w_0().child(Input::new(&self.endpoint)));
         } else {

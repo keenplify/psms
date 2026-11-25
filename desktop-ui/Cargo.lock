@@ -5262,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "psms-desktop"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
