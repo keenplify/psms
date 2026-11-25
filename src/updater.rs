@@ -55,6 +55,7 @@ fn root() -> Result<PathBuf> {
 }
 fn platform() -> Result<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok("macos-arm64"),
         ("windows", "x86_64") => Ok("windows-x64"),
         ("linux", "x86_64") => Ok("linux-x64"),
         ("linux", "aarch64") => Ok("linux-arm64"),
