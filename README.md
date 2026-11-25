@@ -1,6 +1,6 @@
 # pSMS (Papamo SMS)
 
-pSMS is an MIT-licensed, self-hosted message archive written in Rust. Its REST API accepts encrypted uploads. iPhone Shortcuts capture is available today, and Android capture is planned. Each instance hosts one local archive with bundled SQLite. A sync webhook can write changes to a database of your choice through a compatible receiver.
+pSMS is an MIT-licensed, self-hosted message archive written in Rust. Its REST API accepts encrypted uploads. iPhone Shortcuts capture is available today, and Android capture is planned. Each recipient has a separate archive. Bundled SQLite works immediately. PostgreSQL, MySQL, MariaDB and SQL Server can host the authoritative archive in native tables. A sync webhook can write changes to a database of your choice through a compatible receiver.
 
 [Download pSMS](https://www.papamo.dev/sms) · [Setup guide, REST API and webhook contract](https://www.papamo.dev/docs/papamo-sms)
 
@@ -21,6 +21,24 @@ Desktop builds use [GPUI Kit](https://gpui-kit.com/docs/installation). A headles
 | PSMS_TOKEN | generated locally | Single-archive upload credential |
 | PSMS_DB_PATH | Per-user application data | Override with a SQLite file path in an existing directory |
 | PSMS_API_PREFIX | /v1 | API path prefix |
+
+## Choose archive storage
+
+SQLite is bundled and needs no separate server. To move an archive, open **Settings → Archive storage**, choose an engine and enter the path to a private connection file. The same controls appear on the first onboarding step. Use a separate empty database for each recipient.
+
+For a managed background instance, these commands check the destination, copy the archive and verify the active service:
+
+```sh
+psms storage check postgres --connection-file /private/psms-connection.txt
+psms storage activate postgres --connection-file /private/psms-connection.txt
+psms storage status
+```
+
+The engine names are `postgres`, `mysql`, `mariadb` and `sqlserver`. The file contains a PostgreSQL or MySQL connection URL, or a SQL Server ADO connection string. MariaDB uses the MySQL URL format. Use a database-specific account, restrict access to the file and configure verified TLS for network connections. Keep the file at this path after cutover.
+
+For a foreground service managed by systemd, stop the unit, run `psms storage switch ENGINE --connection-file PATH` with its archive path and account, then restart the unit and check `/readyz`. The migration verifies copied rows, commits and reconnects before selecting the new database. If interrupted at commit, repeat the switch with the same destination. Incoming writes go directly to the selected server. A database outage returns a service error.
+
+The old SQLite file is retained. Check an existing message and a new encrypted upload after switching. Back up both the SQL database and the local settings and pairing files, including the connection file. Keep the `PSMS_DB_PATH` setting stable even if you move the old SQLite file into backup. Its adjacent `.settings.sqlite3` and `.storage.json` files are active configuration.
 
 ## Phone setup
 

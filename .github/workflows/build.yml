@@ -32,6 +32,7 @@ jobs:
         with:
           python-version: "3.x"
       - run: python tests/smoke.py target/${{ matrix.target }}/release/psms${{ matrix.ext }}
+      - run: python tests/mcp.py target/${{ matrix.target }}/release/psms${{ matrix.ext }}
       - name: Build Windows installer with NSIS
         if: runner.os == 'Windows'
         shell: pwsh

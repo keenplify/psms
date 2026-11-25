@@ -163,11 +163,18 @@ fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>>
     Ok(path)
 }
 
+fn contact_id(sender: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(format!("psms-contact-v1\n{sender}\n{key}"))
+    )
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut cli = cli::Cli::parse();
     if let Some(cli::Command::ContactId { key_file }) = &cli.command {
-        use sha2::{Digest, Sha256};
         let key = std::fs::read_to_string(key_file)?;
         let key = key.trim_end_matches(['\r', '\n']);
         if key.len() != 32 || !key.is_ascii() {
@@ -179,10 +186,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if sender.is_empty() {
             return Err("enter the exact sender ID or phone number".into());
         }
-        println!(
-            "{:x}",
-            Sha256::digest(format!("psms-contact-v1\n{sender}\n{key}"))
-        );
+        println!("{}", contact_id(sender, key));
         return Ok(());
     }
     let db_path = database_path(cli.options.database.take())?;
