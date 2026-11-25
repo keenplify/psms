@@ -166,6 +166,10 @@ psms manage theme dark
 
 The CLI prints newly issued credentials once. The GUI copies the raw token and displays it in a one-time dialog. Use `Authorization: Bearer TOKEN` in API requests.
 
-## Future hosted accounts
+## Hosted accounts
 
-Papamo is considering an optional paid account for people who want a managed message archive. An account would provide a stable HTTPS address, isolated encrypted storage and managed backups. Customers would sign in and pair their phone, with Papamo operating the domain, tunnel infrastructure where needed, and database. The proposed service would keep recovery keys on customer devices. Hosted accounts, quotas and pricing are still in planning. The self-hosted edition is available under the MIT license.
+Sign in at [Papamo accounts](https://www.papamo.dev/login) with an existing 1.6 Competitive account, Google or Discord. The Singapore identity service verifies the account. Selecting pSMS creates a product membership keyed to its stable Singapore account ID. A free archive holds up to 1,000 encrypted messages.
+
+The regional Rust services use Chicago as the PostgreSQL write primary. Singapore runs an asynchronous read-only standby. A regional service connects over an SSH tunnel using its own database role. Promotion is manual: fence the old primary before promoting the standby and repointing writers. A replica also replays deletions, so it does not replace independent backups.
+
+Operators with the provisioned SSH aliases can build the hosted binary on Linux with `cargo build --release --locked --manifest-path hosted/Cargo.toml`, then run `python scripts/update-hosted.py hosted/target/release/psms-hosted --publish`. The script applies the schema in Chicago, verifies the binary checksum per host, restarts each regional service, and checks readiness. Run `hosted/deploy/smoke.py` on Chicago as the operator to verify isolation and the concurrent quota boundary.

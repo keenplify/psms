@@ -13,3 +13,4 @@ pSMS_Ready.shortcut
 Papamo_SMS_Encrypted_Private.shortcut
 Papamo_SMS_Encrypted_Ready.shortcut
 *.pairing.json
+/hosted/target/

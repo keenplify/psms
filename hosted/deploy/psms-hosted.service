@@ -1,0 +1,16 @@
+[Unit]
+Description=pSMS hosted accounts API
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=psms_hosted
+ExecStart=/usr/local/bin/psms-hosted
+Restart=on-failure
+RestartSec=4
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+[Install]
+WantedBy=multi-user.target
