@@ -7,6 +7,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 import uuid
 from urllib.request import Request, urlopen
@@ -34,6 +35,11 @@ with tempfile.TemporaryDirectory() as temporary:
         return {"id":str(uuid.uuid4()), "sender":"papamo:encrypted:v1",
                 "body":base64.b64encode(secrets.token_bytes(64)).decode(), "contact_id":"a"*64}
 
+    replica_token=secrets.token_hex(32)
+    env["PSMS_REPLICA_READ_TOKEN"]=replica_token
+    pair=Path(temporary)/"pair.json"
+    cli("sync","pair","--source","sa","--public-url","https://psms.example","--output",str(pair))
+    peer=json.loads(pair.read_text())["token"]
     cli("init")
     try:
         upload = cli("token","upload").stdout.strip()
@@ -64,6 +70,41 @@ with tempfile.TemporaryDirectory() as temporary:
         cli("init")
         cli("storage","status")
         assert len(json.loads(request("GET","/v1/messages",owner)[1])["messages"])==1
+        assert not path.exists()
+        _, hook_data=request("POST","/v1/webhooks",owner,{"url":"https://127.0.0.1:1/event"})
+        hook=json.loads(hook_data)["id"]
+        another=message()
+        request("POST","/v1/messages",upload,another)
+        with sqlite3.connect(str(path)+".settings.sqlite3") as settings:
+            for _ in range(20):
+                queued=settings.execute("SELECT count(*) FROM webhook_deliveries WHERE endpoint=? AND message_id=? AND event='message.created'",(hook,another["id"])).fetchone()[0]
+                if queued: break
+                time.sleep(1)
+            assert queued==1
+        replica_path="/v1/replicas/sa/messages"
+        change={"revision":1,"id":another["id"],"snapshot":dict(sender=another["sender"],body=another["body"],contact_id=another["contact_id"],starred=False,archived_at=100)}
+        def deliver(change):
+            for attempt in range(12):
+                try:
+                    return request("POST","/internal/sync/sa",peer,[change])
+                except HTTPError as e:
+                    if e.code!=503 or attempt==11: raise
+                    time.sleep(2)
+        assert json.loads(deliver(change)[1])==1
+        assert json.loads(request("GET",replica_path,replica_token)[1])["messages"][0]["body"]==another["body"]
+        deliver(dict(change,revision=2,snapshot=None))
+        deliver(change)
+        assert json.loads(request("GET",replica_path,replica_token)[1])["messages"]==[]
+        container=subprocess.check_output(["docker","ps","-q","--filter","name=psms-integration-db"],text=True).strip()
+        assert container
+        subprocess.run(["docker","stop","-t","1",container],stdout=subprocess.DEVNULL,check=True)
+        for method, endpoint, token, payload in [("GET","/readyz",owner,None),("POST","/v1/messages",upload,message())]:
+            try:
+                request(method,endpoint,token,payload)
+            except HTTPError as error:
+                assert error.code==503
+            else:
+                raise AssertionError("offline authoritative database accepted a request")
         assert not path.exists()
     except subprocess.CalledProcessError as error:
         print("CLI failed:", error.stderr, file=sys.stderr)
