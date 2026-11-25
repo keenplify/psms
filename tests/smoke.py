@@ -23,8 +23,8 @@ class ArchiveTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
         self.db = self.root / "test.sqlite3"
-        self.env = {k: v for k,v in os.environ.items() if not k.startswith("PAPAMO_")}
-        self.env.update(PAPAMO_DB_PATH=str(self.db), PAPAMO_BIND="127.0.0.1:0", PAPAMO_API_PREFIX="/test/v1")
+        self.env = {k: v for k,v in os.environ.items() if not k.startswith(("PSMS_","PAPAMO_"))}
+        self.env.update(PSMS_DB_PATH=str(self.db), PSMS_BIND="127.0.0.1:0", PSMS_API_PREFIX="/test/v1")
 
     def cli(self, *args):
         return subprocess.check_output([binary, *args], env=self.env, text=True, timeout=20).strip()
@@ -43,7 +43,7 @@ class ArchiveTest(unittest.TestCase):
 
     def test_service(self):
         upload, owner = secrets.token_hex(32),secrets.token_hex(32)
-        self.env.update(PAPAMO_TOKEN=upload,PAPAMO_OWNER_TOKEN=owner)
+        self.env.update(PSMS_TOKEN=upload,PSMS_OWNER_TOKEN=owner)
         with subprocess.Popen([binary,"serve"],env=self.env,stderr=subprocess.PIPE,text=True) as proc:
             try:
                 line=proc.stderr.readline()
@@ -99,7 +99,7 @@ class ArchiveTest(unittest.TestCase):
             db = self.root / f"inbox-{index}.db"
             owner, upload, key = (secrets.token_hex(32), secrets.token_hex(32), secrets.token_hex(16))
             proc = subprocess.Popen([binary, "--database", str(db), "serve"],
-                                    env=dict(self.env,PAPAMO_OWNER_TOKEN=owner,PAPAMO_TOKEN=upload),
+                                    env=dict(self.env,PSMS_OWNER_TOKEN=owner,PSMS_TOKEN=upload),
                                     stderr=subprocess.PIPE,text=True)
             self.addCleanup(proc.stderr.close)
             self.addCleanup(proc.wait,10)

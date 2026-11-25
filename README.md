@@ -17,16 +17,16 @@ Desktop builds use [GPUI Kit](https://gpui-kit.com/docs/installation). A headles
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| PAPAMO_BIND | 127.0.0.1:47832, fallback to available port | HTTP listener behind the proxy |
-| PAPAMO_TOKEN | generated locally | Single-archive upload credential |
-| PAPAMO_DB_PATH | Per-user application data | Override with a SQLite file path in an existing directory |
-| PAPAMO_API_PREFIX | /v1 | API path prefix |
+| PSMS_BIND | 127.0.0.1:47832, fallback to available port | HTTP listener behind the proxy |
+| PSMS_TOKEN | generated locally | Single-archive upload credential |
+| PSMS_DB_PATH | Per-user application data | Override with a SQLite file path in an existing directory |
+| PSMS_API_PREFIX | /v1 | API path prefix |
 
 ## Phone setup
 
-The default archive is `~/Library/Application Support/papamo-sms/papamo.sqlite3` on macOS, `%LOCALAPPDATA%\papamo-sms\papamo.sqlite3` on Windows, and `$XDG_DATA_HOME/papamo-sms/papamo.sqlite3` on Linux (normally `~/.local/share/papamo-sms/papamo.sqlite3`). If upgrading from the working-directory default, set PAPAMO_DB_PATH to the absolute path of your existing archive.
+The default archive is `~/Library/Application Support/papamo-sms/papamo.sqlite3` on macOS, `%LOCALAPPDATA%\papamo-sms\papamo.sqlite3` on Windows, and `$XDG_DATA_HOME/papamo-sms/papamo.sqlite3` on Linux (normally `~/.local/share/papamo-sms/papamo.sqlite3`). If upgrading from the working-directory default, set PSMS_DB_PATH to the absolute path of your existing archive.
 
-Run `psms desktop` for the native inbox. Owner and upload tokens are generated in the private archive by default. When providing an explicit PAPAMO_TOKEN, set a distinct PAPAMO_OWNER_TOKEN for owner HTTP access, or omit it for upload-only HTTP. Protect the database and backups at the OS level.
+Run `psms desktop` for the native inbox. Owner and upload tokens are generated in the private archive by default. When providing an explicit PSMS_TOKEN, set a distinct PSMS_OWNER_TOKEN for owner HTTP access, or omit it for upload-only HTTP. Protect the database and backups at the OS level.
 
 ### Encrypted upload contract
 
@@ -43,7 +43,7 @@ New uploads return 201. Identical retries return 200. Conflicting retries return
 
 ### Prepare a shortcut
 
-For the CLI workflow run `psms onboard --help`. Use the [Actions template](examples/Papamo%20SMS%20Encrypted.shortcut). To prepare a private copy, set PAPAMO_TOKEN to the instance upload token and run the following on a trusted Mac with Python 3.10+. The new directory includes a recovery key. Supply PAPAMO_ARCHIVE_KEY to reuse an existing key. The person generating the shortcut can extract both secrets.
+For the CLI workflow run `psms onboard --help`. Use the [Actions template](examples/Papamo%20SMS%20Encrypted.shortcut). To prepare a private copy, set PSMS_TOKEN to the instance upload token and run the following on a trusted Mac with Python 3.10+. The new directory includes a recovery key. Supply PSMS_ARCHIVE_KEY to reuse an existing key. The person generating the shortcut can extract both secrets.
 
 ```sh
 python3 examples/personalize.py ~/papamo-private --endpoint https://YOUR-HOST/v1/messages
@@ -51,7 +51,7 @@ cd ~/papamo-private
 shortcuts sign --mode anyone --input Papamo_SMS_Encrypted_Private.shortcut --output Papamo_SMS_Encrypted_Ready.shortcut
 ```
 
-Share a personalized signed copy privately with its owner. Keep the recovery key on trusted devices. On iOS 27, enable the Message trigger on the receiving iPhone and test a phrase containing a space. Set PAPAMO_ACTIONS_SHORTCUT_URL or PAPAMO_OPENPGP_SHORTCUT_URL to the signed HTTPS download links you want shown to the authenticated owner. Operators supply and test their own OpenPGP shortcut. See the [handoff and screenshot list](HANDOFF.md).
+Share a personalized signed copy privately with its owner. Keep the recovery key on trusted devices. On iOS 27, enable the Message trigger on the receiving iPhone and test a phrase containing a space. Set PSMS_ACTIONS_SHORTCUT_URL or PSMS_OPENPGP_SHORTCUT_URL to the signed HTTPS download links you want shown to the authenticated owner. Operators supply and test their own OpenPGP shortcut. See the [handoff and screenshot list](HANDOFF.md).
 
 
 ## Remote access
@@ -103,3 +103,5 @@ Download the Chrome or Firefox extension ZIP from this release. For Chrome, unzi
 Open the extension to detect pSMS on the default local port or enter the full API address for a custom port or HTTPS server. Enter a **Browser autofill** token from pSMS Settings and the private Actions recovery key. They stay in extension session storage until you lock or restart the browser. Enable autofill individually on each sign-in site.
 
 Focus the verification-code field. A recent SMS ending in a line such as `@example.com #123456` can show **Autofill from GLOBE** and **123 456**. Click the suggestion to fill the field. The extension decrypts on this device, verifies the exact HTTPS hostname and ignores unbound SMS and messages over five minutes old. The sender label comes from the message and does not certify the sender.
+
+Settings also lets you change the appearance and sync interval. New installations sync every six hours when capacity allows. The desktop starts with the system appearance and remembers a manual change. Environment variables use the `PSMS_` prefix. Previous `PAPAMO_` names remain supported when their replacements are unset.

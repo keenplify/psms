@@ -15,8 +15,12 @@ pub struct Provider {
 
 pub fn providers() -> Result<Vec<Provider>, Box<dyn Error>> {
     [
-        (ACTIONS, "Actions", "PAPAMO_ACTIONS_SHORTCUT_URL"),
-        (OPENPGP, "OpenPGP (iPGMail)", "PAPAMO_OPENPGP_SHORTCUT_URL"),
+        (ACTIONS, "Actions", crate::env_name!("ACTIONS_SHORTCUT_URL")),
+        (
+            OPENPGP,
+            "OpenPGP (iPGMail)",
+            crate::env_name!("OPENPGP_SHORTCUT_URL"),
+        ),
     ]
     .into_iter()
     .map(|(marker, name, var)| {

@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as folder:
     cli(hub,"sync","pair","--source","sa","--public-url",hurl,"--output",pairing)
     cli(source,"sync","connect",pairing)
     token,owner=secrets.token_hex(32),secrets.token_hex(32)
-    env=dict(os.environ,PAPAMO_TOKEN=token,PAPAMO_OWNER_TOKEN=owner,PAPAMO_SYNC_INTERVAL_SECONDS="1")
+    env=dict(os.environ,PSMS_TOKEN=token,PSMS_OWNER_TOKEN=owner,PSMS_SYNC_INTERVAL_SECONDS="1")
     procs=[]
     def start(db,p):
         proc=subprocess.Popen([binary,"--database",str(db),"--bind",f"127.0.0.1:{p}","serve"],env=env,stderr=subprocess.PIPE,text=True)

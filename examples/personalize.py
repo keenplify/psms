@@ -16,11 +16,11 @@ def main():
     endpoint = urlsplit(args.endpoint)
     if endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None or endpoint.query or endpoint.fragment:
         parser.error("provide an HTTPS messages URL without credentials, query, or fragment")
-    token = os.environ.get("PAPAMO_TOKEN", secrets.token_hex(32))
+    token = os.environ.get("PSMS_TOKEN", os.environ.get("PAPAMO_TOKEN", secrets.token_hex(32)))
     alphabet = string.ascii_letters + string.digits
-    key = os.environ.get("PAPAMO_ARCHIVE_KEY") or "".join(secrets.choice(alphabet) for _ in range(32))
+    key = os.environ.get("PSMS_ARCHIVE_KEY", os.environ.get("PAPAMO_ARCHIVE_KEY")) or "".join(secrets.choice(alphabet) for _ in range(32))
     if len(token) < 32 or not all(33 <= ord(c) <= 126 for c in token):
-        parser.error("PAPAMO_TOKEN requires at least 32 visible ASCII characters")
+        parser.error("PSMS_TOKEN requires at least 32 visible ASCII characters")
     if len(key) != 32 or any(c not in alphabet for c in key) or key == token:
         parser.error("use a separate 32-character ASCII alphanumeric archive key")
     template = Path(__file__).with_name("Papamo SMS Encrypted.shortcut")

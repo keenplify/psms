@@ -91,11 +91,11 @@ impl Dashboard {
             .h_full()
             .p_5()
             .gap_3()
-            .bg(rgb(0xf0f3f8))
+            .bg(self.color(0xf0f3f8))
             .border_r_1()
-            .border_color(rgb(0xd9dfe7))
+            .border_color(self.color(0xd9dfe7))
             .child(img(self.logo.clone()).size(px(48.)))
-            .child(heading("Set up pSMS"));
+            .child(self.heading("Set up pSMS"));
         for (i, label) in steps.iter().enumerate() {
             let active = i == self.step as usize;
             side = side.child(
@@ -111,8 +111,8 @@ impl Dashboard {
                             .items_center()
                             .justify_center()
                             .rounded_full()
-                            .bg(rgb(if active { BLUE } else { 0xdce2ea }))
-                            .text_color(rgb(if active { 0xffffff } else { MUTED }))
+                            .bg(self.color(if active { BLUE } else { 0xdce2ea }))
+                            .text_color(self.color(if active { 0xfffffe } else { MUTED }))
                             .text_sm()
                             .child(format!("{}", i + 1)),
                     )
@@ -124,21 +124,21 @@ impl Dashboard {
             .max_w(px(520.))
             .w_full()
             .gap_4()
-            .child(caption(format!("Step {} of 4", self.step + 1)));
+            .child(self.caption(format!("Step {} of 4", self.step + 1)));
         match self.step{
-    0=>card=card.child(heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(caption(format!("Archive on this computer: {}",self.path.display())))
+    0=>card=card.child(self.heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(self.caption(format!("Archive on this computer: {}",self.path.display())))
         .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,_,cx|s.save_step(1,cx))))),
-    1=>card=card.child(heading("Connect your iPhone")).child("Enter the public HTTPS endpoint for this archive. If it’s on your computer, point a tunnel or HTTPS proxy at the local service first.")
-        .child(Input::new(&self.endpoint)).child(caption("Use your own endpoint and upload credentials together. Android capture is coming next."))
+    1=>card=card.child(self.heading("Connect your iPhone")).child("Enter the public HTTPS endpoint for this archive. If it’s on your computer, point a tunnel or HTTPS proxy at the local service first.")
+        .child(Input::new(&self.endpoint)).child(self.caption("Use your own endpoint and upload credentials together. Android capture is coming next."))
         .child(div().h_flex().gap_2().child(button("prepare","Create private shortcut").primary().on_click(cx.listener(|s,_,_,cx|s.prepare(cx))))
             .child(button("network-guide","Network setup").ghost().on_click(|_,_,cx|cx.open_url(GUIDE)))),
-    2=>{card=card.child(heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
+    2=>{card=card.child(self.heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
         .child(div().h_flex().gap_2().child(button("files","Open pairing folder").on_click(cx.listener(|s,_,_,cx|{if let Some(p)=&s.folder{cx.open_with_system(p)}})))
         .child(button("command","Copy signing command").on_click(cx.listener(|s,_,_,cx|{cx.write_to_clipboard(ClipboardItem::new_string("shortcuts sign --mode anyone --input pSMS_Encrypted.shortcut --output pSMS_Ready.shortcut".into()));s.notice="Signing command copied.".into();cx.notify()}))))
         .child("Install Actions on the iPhone, import the signed shortcut, then enable a Message automation that passes its input to that shortcut.")
         .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,_,cx|s.save_step(3,cx)))));},
     _=>{let received=self.newest()>self.baseline;
-       card=card.child(heading(if received{"A message arrived"}else{"Try a test message"}))
+       card=card.child(self.heading(if received{"A message arrived"}else{"Try a test message"}))
         .child(if received{"This archive received an encrypted upload since pairing. Use your recovery key to unlock its contents in the inbox."}else{"Have another phone send you a text matching your automation. This screen checks for new encrypted uploads automatically."})
         .child(div().child(button("done",if received{"Open inbox"}else{"Check for a message"}).primary().on_click(cx.listener(|s,_,_,cx|{
            if s.newest()>s.baseline{s.finish(cx)}else{s.notice="Waiting for a new encrypted upload. Check the endpoint and the phone automation.".into();cx.notify()}
@@ -212,8 +212,8 @@ impl Dashboard {
             .v_flex()
             .gap_3()
             .max_w(px(570.))
-            .child(heading("Settings"))
-            .child(caption(self.path.display().to_string()))
+            .child(self.heading("Settings"))
+            .child(self.caption(self.path.display().to_string()))
             .child(
                 div()
                     .h_flex()
@@ -249,21 +249,48 @@ impl Dashboard {
                 .ok();
             card = card
                 .child("Paired destination")
-                .child(caption(endpoint))
-                .child(caption(
-                    pending
-                        .map(|n| format!("{n} pending message changes"))
-                        .unwrap_or_else(|| "Starting sync…".into()),
-                ));
+                .child(self.caption(endpoint))
+                .child(
+                    self.caption(
+                        pending
+                            .map(|n| format!("{n} pending message changes"))
+                            .unwrap_or_else(|| "Starting sync…".into()),
+                    ),
+                );
         } else {
             card=card.child("Connect a compatible receiver to replicate encrypted changes. Use the endpoint and credential from its private pairing file.")
-        .child(caption("Receiver endpoint")).child(Input::new(&self.hook_url)).child(caption("Pairing token")).child(Input::new(&self.hook_token))
+        .child(self.caption("Receiver endpoint")).child(Input::new(&self.hook_url)).child(self.caption("Pairing token")).child(Input::new(&self.hook_token))
         .child(div().child(button("save-hook","Connect webhook").primary().on_click(cx.listener(|s,_,w,cx|s.connect_hook(w,cx)))));
         }
-        card = card
-            .child(caption(
-                "Replication defaults to every 12 hours and waits for spare server capacity.",
-            ))
+        let saved = self
+            .db
+            .query_row("SELECT seconds FROM sync_interval WHERE id=1", [], |r| {
+                r.get::<_, u32>(0)
+            })
+            .ok();
+        let mut timing = div().h_flex().gap_2();
+        for (i, (label, seconds)) in [
+            ("Default", None),
+            ("1 hour", Some(3600)),
+            ("6 hours", Some(21600)),
+            ("12 hours", Some(43200)),
+            ("Daily", Some(86400)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let choice=Button::new(("sync-interval",i)).label(label).on_click(cx.listener(move|s,_,_,cx|{
+                let result=if let Some(seconds)=seconds{s.db.execute("INSERT INTO sync_interval(id,seconds) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET seconds=excluded.seconds",[seconds])}else{s.db.execute("DELETE FROM sync_interval WHERE id=1",[])};
+                s.notice=if result.is_ok(){"Sync timing saved.".into()}else{"Could not save sync timing.".into()};cx.notify()
+            }));
+            timing = timing.child(if seconds == saved {
+                choice.primary()
+            } else {
+                choice
+            });
+        }
+        card = card.child(self.heading("Sync timing")).child(timing)
+            .child(self.caption("Default is 6 hours unless configured by your server. Sync waits for spare capacity."))
             .child(
                 div().child(
                     button("api-docs", "API and webhook documentation")

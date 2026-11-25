@@ -33,6 +33,7 @@ struct Dashboard {
     db: Connection,
     path: PathBuf,
     screen: Screen,
+    dark: bool,
     starred: bool,
     page: i64,
     older: bool,
@@ -55,20 +56,39 @@ struct Dashboard {
     logo: Arc<Image>,
     data_version: i64,
 }
-fn heading(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_2xl()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(INK))
-        .child(text.into())
-}
-fn caption(text: impl Into<SharedString>) -> Div {
-    div().text_sm().text_color(rgb(MUTED)).child(text.into())
-}
 fn button(id: &'static str, label: &'static str) -> Button {
     Button::new(id).label(label)
 }
 impl Dashboard {
+    fn color(&self, light: u32) -> Rgba {
+        let dark = match light {
+            INK => 0xf3f4f7,
+            MUTED => 0xb5bdca,
+            0xffffff => 0x191b20,
+            0xf1f3f6 | 0xf0f3f8 => 0x25282f,
+            0xf9fafb | 0xf3f4f6 => 0x22252b,
+            0xdce0e5 | 0xd3d8df | 0xd9dfe7 => 0x41454e,
+            0xd7dce3 | 0xdce2ea => 0x414854,
+            0xe9eaee => 0x32363d,
+            0xe8f0ff => 0x24334a,
+            other => other,
+        };
+        rgb(if self.dark { dark } else { light })
+    }
+    fn heading(&self, text: impl Into<SharedString>) -> Div {
+        div()
+            .text_2xl()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(self.color(INK))
+            .child(text.into())
+    }
+    fn caption(&self, text: impl Into<SharedString>) -> Div {
+        div()
+            .text_sm()
+            .text_color(self.color(MUTED))
+            .child(text.into())
+    }
+
     fn refresh(&mut self) {
         match archive::read(
             &self.db,
@@ -159,7 +179,7 @@ impl Dashboard {
                     .py_2()
                     .rounded_lg()
                     .cursor_pointer()
-                    .bg(rgb(if selected { BLUE } else { 0xf1f3f6 }))
+                    .bg(self.color(if selected { BLUE } else { 0xf1f3f6 }))
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.selected = Some(key.clone());
                         s.show(Screen::Inbox, cx)
@@ -172,8 +192,8 @@ impl Dashboard {
                             .items_center()
                             .justify_center()
                             .rounded_full()
-                            .bg(rgb(if selected { 0x467ed3 } else { 0xd7dce3 }))
-                            .text_color(rgb(if selected { 0xffffff } else { MUTED }))
+                            .bg(self.color(if selected { 0x467ed3 } else { 0xd7dce3 }))
+                            .text_color(self.color(if selected { 0xfffffe } else { MUTED }))
                             .child(initials),
                     )
                     .child(
@@ -185,21 +205,21 @@ impl Dashboard {
                                 div()
                                     .truncate()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(if selected { 0xffffff } else { INK }))
+                                    .text_color(self.color(if selected { 0xfffffe } else { INK }))
                                     .child(t.title.clone()),
                             )
                             .child(
                                 div()
                                     .truncate()
                                     .text_sm()
-                                    .text_color(rgb(if selected { 0xe6efff } else { MUTED }))
+                                    .text_color(self.color(if selected { 0xe6efff } else { MUTED }))
                                     .child(preview),
                             ),
                     ),
             );
         }
         if shown == 0 {
-            list = list.child(div().p_3().child(caption(if query.is_empty() {
+            list = list.child(div().p_3().child(self.caption(if query.is_empty() {
                 "Your conversations will appear here."
             } else {
                 "No matches on this page."
@@ -210,9 +230,9 @@ impl Dashboard {
             .w(px(278.))
             .h_full()
             .flex_shrink_0()
-            .bg(rgb(0xf1f3f6))
+            .bg(self.color(0xf1f3f6))
             .border_r_1()
-            .border_color(rgb(0xd3d8df))
+            .border_color(self.color(0xd3d8df))
             .child(
                 div()
                     .v_flex()
@@ -224,7 +244,7 @@ impl Dashboard {
                             .items_center()
                             .gap_2()
                             .child(img(self.logo.clone()).size(px(30.)))
-                            .child(heading("Messages")),
+                            .child(self.heading("Messages")),
                     )
                     .child(Input::new(&self.search))
                     .child(
@@ -279,11 +299,15 @@ impl Dashboard {
                     ),
             )
             .child(
-                div().border_t_1().border_color(rgb(0xd3d8df)).p_3().child(
-                    button("config", "Settings")
-                        .ghost()
-                        .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Settings, cx))),
-                ),
+                div()
+                    .border_t_1()
+                    .border_color(self.color(0xd3d8df))
+                    .p_3()
+                    .child(
+                        button("config", "Settings")
+                            .ghost()
+                            .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Settings, cx))),
+                    ),
             )
     }
     fn unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -318,7 +342,12 @@ impl Dashboard {
             .threads
             .iter()
             .find(|t| Some(&t.key) == self.selected.as_ref());
-        let mut pane = div().v_flex().flex_1().min_w_0().h_full().bg(rgb(0xffffff));
+        let mut pane = div()
+            .v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(self.color(0xffffff));
         let title = thread
             .map(|t| t.title.clone())
             .unwrap_or_else(|| "Inbox".into());
@@ -329,9 +358,9 @@ impl Dashboard {
                 .justify_between()
                 .px_5()
                 .py_3()
-                .bg(rgb(0xf9fafb))
+                .bg(self.color(0xf9fafb))
                 .border_b_1()
-                .border_color(rgb(0xdce0e5))
+                .border_color(self.color(0xdce0e5))
                 .child(
                     div()
                         .text_lg()
@@ -366,9 +395,9 @@ impl Dashboard {
                     .p_4()
                     .gap_2()
                     .v_flex()
-                    .child(caption(
-                        "Enter your Actions recovery key. It stays in this window.",
-                    ))
+                    .child(
+                        self.caption("Enter your Actions recovery key. It stays in this window."),
+                    )
                     .child(
                         div()
                             .h_flex()
@@ -403,7 +432,7 @@ impl Dashboard {
                 } else {
                     m.text.clone()
                 };
-                let mut actions=div().h_flex().items_center().gap_2().child(caption(m.time.clone()))
+                let mut actions=div().h_flex().items_center().gap_2().child(self.caption(m.time.clone()))
                     .child(Button::new(("star",i)).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
                         if s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_err(){s.notice="Could not change this star.".into()}s.refresh();cx.notify()
                     })));
@@ -427,7 +456,7 @@ impl Dashboard {
                             .px_4()
                             .py_2()
                             .rounded_xl()
-                            .bg(rgb(0xe9eaee))
+                            .bg(self.color(0xe9eaee))
                             .child(text),
                     ),
                 );
@@ -443,12 +472,12 @@ impl Dashboard {
                     .gap_3()
                     .p_5()
                     .child(img(self.logo.clone()).size(px(60.)))
-                    .child(heading(if self.starred {
+                    .child(self.heading(if self.starred {
                         "No starred messages"
                     } else {
                         "Your inbox is ready"
                     }))
-                    .child(caption(if self.starred {
+                    .child(self.caption(if self.starred {
                         "Star a message to find it here."
                     } else {
                         "Messages appear here when a connected device sends them."
@@ -460,15 +489,19 @@ impl Dashboard {
             );
         }
         pane.child(
-            div().border_t_1().border_color(rgb(0xdce0e5)).p_3().child(
-                div()
-                    .rounded_full()
-                    .bg(rgb(0xf3f4f6))
-                    .px_4()
-                    .py_2()
-                    .text_color(rgb(MUTED))
-                    .child("Reply is a upcoming feature"),
-            ),
+            div()
+                .border_t_1()
+                .border_color(self.color(0xdce0e5))
+                .p_3()
+                .child(
+                    div()
+                        .rounded_full()
+                        .bg(self.color(0xf3f4f6))
+                        .px_4()
+                        .py_2()
+                        .text_color(self.color(MUTED))
+                        .child("Reply is a upcoming feature"),
+                ),
         )
     }
 }
@@ -490,15 +523,15 @@ impl Render for Dashboard {
         let mut root = div()
             .v_flex()
             .size_full()
-            .bg(rgb(0xffffff))
-            .text_color(rgb(INK))
+            .bg(self.color(0xffffff))
+            .text_color(self.color(INK))
             .child(div().flex_1().min_h_0().child(layout));
         if !self.notice.is_empty() {
             root = root.child(
                 div()
                     .px_4()
                     .py_2()
-                    .bg(rgb(0xe8f0ff))
+                    .bg(self.color(0xe8f0ff))
                     .text_sm()
                     .child(self.notice.clone()),
             )
@@ -546,6 +579,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
         },
     )?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS desktop_appearance(id INTEGER PRIMARY KEY CHECK(id=1),dark INTEGER NOT NULL)")?;
+    let preference = db.query_row(
+        "SELECT (SELECT dark FROM desktop_appearance WHERE id=1)",
+        [],
+        |r| r.get::<_, Option<bool>>(0),
+    )?;
     let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -557,8 +596,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
             .detach();
+            let preferred = size(px(900.), px(620.));
+            let size = cx
+                .primary_display()
+                .map(|display| {
+                    let available = display.visible_bounds().size;
+                    size(
+                        preferred.width.min(available.width * 0.90),
+                        preferred.height.min(available.height * 0.90),
+                    )
+                })
+                .unwrap_or(preferred);
             gpui_kit::open_window(
                 WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("pSMS · Papamo SMS".into()),
                         ..Default::default()
@@ -567,6 +618,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 cx,
                 |window, cx| {
+                    let dark = preference
+                        .unwrap_or_else(|| ThemeMode::from(window.appearance()).is_dark());
+                    Theme::change(
+                        if dark {
+                            ThemeMode::Dark
+                        } else {
+                            ThemeMode::Light
+                        },
+                        Some(window),
+                        cx,
+                    );
                     let key = cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("Actions archive key")
@@ -627,6 +689,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 Screen::Setup
                             },
+                            dark,
                             starred: only_starred,
                             page: 0,
                             older: false,

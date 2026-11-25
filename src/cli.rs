@@ -70,7 +70,7 @@ pub enum Tunnel {
     /// Connect a remotely managed Cloudflare tunnel with a stable hostname.
     Cloudflare {
         /// File containing the tunnel connector token.
-        #[arg(long, env = "PAPAMO_TUNNEL_TOKEN_FILE", hide_env_values = true)]
+        #[arg(long, env = crate::env_name!("TUNNEL_TOKEN_FILE"), hide_env_values = true)]
         token_file: PathBuf,
     },
 }
@@ -78,13 +78,13 @@ pub enum Tunnel {
 #[derive(Args)]
 pub struct ServerOptions {
     /// HTTP listen address. Defaults to loopback port 47832 with automatic fallback.
-    #[arg(long, global = true, env = "PAPAMO_BIND")]
+    #[arg(long, global = true, env = crate::env_name!("BIND"))]
     pub bind: Option<SocketAddr>,
     /// SQLite archive path. Defaults to the user's application data directory.
-    #[arg(long, global = true, env = "PAPAMO_DB_PATH")]
+    #[arg(long, global = true, env = crate::env_name!("DB_PATH"))]
     pub database: Option<PathBuf>,
     /// URL path prefix for the JSON API.
-    #[arg(long, global = true, env = "PAPAMO_API_PREFIX", default_value = "/v1")]
+    #[arg(long, global = true, env = crate::env_name!("API_PREFIX"), default_value = "/v1")]
     pub api_prefix: String,
 }
 

@@ -27,6 +27,7 @@
     const button=document.createElement("button");
     button.type="button";
     button.style.cssText="display:grid;gap:2px;min-width:144px;max-width:250px;padding:6px 14px;border:1px solid #c4c5cb;border-radius:9px;background:#f7f6fb;color:#202126;box-shadow:0 3px 12px #1414222b;font:500 12px system-ui;cursor:pointer";
+    if(matchMedia("(prefers-color-scheme: dark)").matches){button.style.background="#34363d";button.style.color="#f5f5f7";button.style.borderColor="#555861"}
     const caption=document.createElement("span");
     caption.textContent="Autofill from "+data.sender;
     const code=document.createElement("strong");

@@ -21,7 +21,7 @@ use subtle::ConstantTimeEq;
 type AnyError = Box<dyn Error>;
 const BATCH: usize = 8;
 const RETRY: u64 = 300;
-const DEFAULT_INTERVAL: u64 = 12 * 3600;
+const DEFAULT_INTERVAL: u64 = 6 * 3600;
 #[derive(clap::Subcommand)]
 pub enum Command {
     /// On the receiving computer, create a private pairing file for one source archive.
@@ -254,7 +254,7 @@ pub fn configure(a: &Archive, db_path: &FilePath) -> Result<Router<Archive>, Any
 fn start_source(a: &Archive, send: &FilePath) -> Result<(), AnyError> {
     let p: Pairing = read(send)?;
     verified(&p)?;
-    let interval = match std::env::var("PAPAMO_SYNC_INTERVAL_SECONDS") {
+    let interval = match std::env::var(crate::env_name!("SYNC_INTERVAL_SECONDS")) {
         Ok(v) => v.parse()?,
         Err(std::env::VarError::NotPresent) => DEFAULT_INTERVAL,
         Err(e) => return Err(e.into()),
@@ -298,7 +298,7 @@ async fn worker(a: Archive, p: Pairing, http: reqwest::Client, interval: u64) {
         let delay = a
             .query(move |db| {
                 db.query_row(
-                    "SELECT max(0,completed_at+?1-unixepoch()) FROM sync_schedule WHERE id=1",
+                    "SELECT max(0,completed_at+coalesce((SELECT seconds FROM sync_interval WHERE id=1),?1)-unixepoch()) FROM sync_schedule WHERE id=1",
                     [interval as i64],
                     |r| r.get::<_, i64>(0).map(|n| n as u64),
                 )
@@ -306,7 +306,7 @@ async fn worker(a: Archive, p: Pairing, http: reqwest::Client, interval: u64) {
             .await
             .unwrap_or(RETRY);
         if delay > 0 {
-            tokio::time::sleep(Duration::from_secs(delay)).await;
+            tokio::time::sleep(Duration::from_secs(delay.min(30))).await;
             continue;
         }
         if !quiet().await {

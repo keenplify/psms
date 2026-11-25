@@ -18,14 +18,15 @@ pub fn run(provider: Tunnel, bind: SocketAddr) -> Result<(), Box<dyn Error>> {
             cmd.args(["tunnel", "run", "--token-file"]).arg(path);
         }
     }
-    for key in [
-        "PAPAMO_TOKEN",
-        "PAPAMO_OWNER_TOKEN",
-        "PAPAMO_ARCHIVE_KEY",
-        "TUNNEL_TOKEN",
-    ] {
-        cmd.env_remove(key);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_str()
+            .is_some_and(|k| k.starts_with("PSMS_") || k.starts_with("PAPAMO_"))
+        {
+            cmd.env_remove(key);
+        }
     }
+    cmd.env_remove("TUNNEL_TOKEN");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

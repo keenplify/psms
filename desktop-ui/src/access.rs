@@ -7,8 +7,8 @@ impl Dashboard {
             .gap_3()
             .max_w(px(570.))
             .mb_5()
-            .child(heading("Access tokens"));
-        let mut choices = div().h_flex().gap_2().child(caption("Expiration"));
+            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.heading("Access tokens"));
+        let mut choices = div().h_flex().gap_2().child(self.caption("Expiration"));
         for (index, (label, days)) in [("7 days", Some(7)), ("30 days", Some(30)), ("Never", None)]
             .into_iter()
             .enumerate()
@@ -33,11 +33,16 @@ impl Dashboard {
                     .h_flex()
                     .gap_2()
                     .items_center()
-                    .child(div().flex_1().child(label).child(caption(match status {
-                        Ok(Some(text)) => text,
-                        Ok(None) => "No token".into(),
-                        Err(_) => "Service upgrade required".into(),
-                    })));
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(label)
+                            .child(self.caption(match status {
+                                Ok(Some(text)) => text,
+                                Ok(None) => "No token".into(),
+                                Err(_) => "Service upgrade required".into(),
+                            })),
+                    );
             row = row.child(
                 Button::new(("issue", index))
                     .label(if exists {
@@ -81,7 +86,7 @@ impl Dashboard {
                         .h_flex()
                         .gap_2()
                         .items_center()
-                        .child(caption(format!("{label} token is ready to copy once.")))
+                        .child(self.caption(format!("{label} token is ready to copy once.")))
                         .child(button("copy-secret", "Copy token").primary().on_click(
                             cx.listener(|s, _, _, cx| {
                                 if let Some((_, secret)) = s.issued.take() {
@@ -94,7 +99,7 @@ impl Dashboard {
                 );
         }
         view = view
-            .child(heading("Event webhooks"))
+            .child(self.heading("Event webhooks"))
             .child(Input::new(&self.delivery_url))
             .child(
                 button("add-destination", "Add destination").on_click(cx.listener(
@@ -128,7 +133,7 @@ impl Dashboard {
                     div()
                         .h_flex()
                         .gap_2()
-                        .child(div().flex_1().child(caption(url)))
+                        .child(div().flex_1().child(self.caption(url)))
                         .child(
                             Button::new(("rotate-hook", index))
                                 .label("Rotate token")

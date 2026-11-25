@@ -1,3 +1,16 @@
+// Prefer the current spelling even when explicitly empty.
+#[macro_export]
+macro_rules! env_name {
+    ($suffix:literal) => {{
+        const CURRENT: &str = concat!("PSMS_", $suffix);
+        const LEGACY: &str = concat!("PAPAMO_", $suffix);
+        if std::env::var_os(CURRENT).is_none() && std::env::var_os(LEGACY).is_some() {
+            LEGACY
+        } else {
+            CURRENT
+        }
+    }};
+}
 #[allow(dead_code)]
 mod app_tokens;
 mod cli;
@@ -120,12 +133,12 @@ fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>>
         return Ok(path);
     }
     let folder = dirs::data_local_dir()
-        .ok_or("could not locate the application data directory; set PAPAMO_DB_PATH")?
+        .ok_or("could not locate the application data directory; set PSMS_DB_PATH")?
         .join("papamo-sms");
     let path = folder.join("papamo.sqlite3");
     let legacy = Path::new("papamo.sqlite3");
     if !path.try_exists()? && legacy.try_exists()? {
-        return Err("found a working-directory archive; set PAPAMO_DB_PATH to its absolute path to keep using it".into());
+        return Err("found a working-directory archive; set PSMS_DB_PATH to its absolute path to keep using it".into());
     }
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
@@ -183,7 +196,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let worker = match cli.command {
         Some(cli::Command::Onboard { endpoint, output }) => {
-            let token = match env::var("PAPAMO_TOKEN") {
+            let token = match env::var(crate::env_name!("TOKEN")) {
                 Ok(v) => v,
                 Err(_) => Connection::open_with_flags(
                     &db_path,
@@ -225,7 +238,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         _ => None,
     };
 
-    let configured_token = env::var_os("PAPAMO_TOKEN")
+    let configured_token = env::var_os(crate::env_name!("TOKEN"))
         .map(|v| v.into_string().map_err(|_| "invalid upload token"))
         .transpose()?;
     let prefix = cli.options.api_prefix;
@@ -236,7 +249,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
     }) {
-        return Err("PAPAMO_API_PREFIX requires an absolute path such as /v1".into());
+        return Err("PSMS_API_PREFIX requires an absolute path such as /v1".into());
     }
     let mut db = Connection::open(&db_path)?;
     db.execute_batch(
@@ -264,9 +277,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             starred INTEGER NOT NULL
         )",
     )?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;
     db.execute_batch(app_tokens::SCHEMA)?;
     db.execute_batch(include_str!("webhooks.sql"))?;
-    let configured_owner = env::var_os("PAPAMO_OWNER_TOKEN")
+    let configured_owner = env::var_os(crate::env_name!("OWNER_TOKEN"))
         .map(|s| s.into_string().map_err(|_| "invalid owner token"))
         .transpose()?;
     let (token, owner) = match configured_token {
@@ -277,14 +291,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err("invalid PAPAMO_TOKEN".into());
+        return Err("invalid PSMS_TOKEN".into());
     }
     if let Some(value) = &owner
         && (value == &token || value.len() < 32 || !value.bytes().all(|b| b.is_ascii_graphic()))
     {
-        return Err("PAPAMO_OWNER_TOKEN must be separate from PAPAMO_TOKEN and contain at least 32 visible ASCII characters".into());
+        return Err("PSMS_OWNER_TOKEN must be separate from PSMS_TOKEN and contain at least 32 visible ASCII characters".into());
     }
-    let replica_reader = env::var("PAPAMO_REPLICA_READ_TOKEN").ok();
+    let replica_reader = env::var(crate::env_name!("REPLICA_READ_TOKEN")).ok();
     if let Some(reader) = &replica_reader
         && (reader.len() < 32
             || !reader.bytes().all(|b| b.is_ascii_graphic())
