@@ -120,6 +120,12 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     let target = Target::load(engine, &file)?;
     target.verify().await?;
     let _guard = lock(path)?;
+    if crate::daemon::running_address(path)
+        .map_err(|_| "could not check local service")?
+        .is_some()
+    {
+        return Err("stop the running archive before migration".into());
+    }
     if sidecar(path, ".storage.json").try_exists()? {
         return Err("an external archive is already selected".into());
     }
@@ -195,14 +201,16 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     }
     let mut max_position = 1;
     if migrated {
-        if src.table_exists(None, "replicated_messages")?
-            && src.query_row(
-                "SELECT EXISTS(SELECT 1 FROM replicated_messages)",
-                [],
-                |r| r.get::<_, bool>(0),
-            )?
-        {
-            return Err("this source contains replica data; source retained".into());
+        if src.table_exists(None, "replicated_messages")? {
+            let contact = if src.table_exists(None, "replicated_message_contacts")? {
+                "(SELECT contact_id FROM replicated_message_contacts c WHERE c.region=m.region AND c.message_id=m.id)"
+            } else {
+                "NULL"
+            };
+            copy_rows(&src,c.as_mut(),"psms_replicas",&["id","region","message_id","position_id","revision","provider","body","archived_at","starred","contact_id"],&format!("SELECT region || '/' || id,region,id,rowid,revision,sender,body,archived_at,starred,{contact} FROM replicated_messages m")).await?;
+        }
+        if src.table_exists(None, "replicated_contacts")? {
+            copy_rows(&src,c.as_mut(),"psms_replica_contacts",&["id","region","contact_id","first_seen_at","last_seen_at"],"SELECT region || '/' || id,region,id,first_seen_at,last_seen_at FROM replicated_contacts").await?;
         }
         if src.table_exists(None, "contacts")? {
             copy_rows(
@@ -219,20 +227,58 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
         } else {
             "NULL"
         };
-        copy_rows(&src,c.as_mut(),"psms_messages",&["id","position_id","provider","body","archived_at","starred","contact_id"],&format!("SELECT m.id,m.rowid,m.sender,m.body,m.archived_at,coalesce(f.starred,0),{cid} FROM messages m LEFT JOIN message_flags f ON f.message_id=m.id")).await?;
-        copy_rows(
-            &src,
-            c.as_mut(),
-            "psms_tombstones",
-            &["id"],
-            "SELECT id FROM deleted_messages",
-        )
-        .await?;
+        let (flags, join) = if src.table_exists(None, "message_flags")? {
+            (
+                "coalesce(f.starred,0)",
+                "LEFT JOIN message_flags f ON f.message_id=m.id",
+            )
+        } else {
+            ("0", "")
+        };
+        copy_rows(&src,c.as_mut(),"psms_messages",&["id","position_id","provider","body","archived_at","starred","contact_id"],&format!("SELECT m.id,m.rowid,m.sender,m.body,m.archived_at,{flags},{cid} FROM messages m {join}")).await?;
+        if src.table_exists(None, "deleted_messages")? {
+            copy_rows(
+                &src,
+                c.as_mut(),
+                "psms_tombstones",
+                &["id"],
+                "SELECT id FROM deleted_messages",
+            )
+            .await?;
+        }
         max_position = src.query_row(
             "SELECT max(1,coalesce(max(rowid),0)) FROM messages",
             [],
             |r| r.get(0),
         )?;
+        if src.table_exists(None, "replicated_messages")? {
+            max_position = max_position.max(src.query_row(
+                "SELECT coalesce(max(rowid),0) FROM replicated_messages",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?);
+        }
+        if src.table_exists(None, "sync_queue")? {
+            let old_sequence: i64 = src.query_row(
+                "SELECT coalesce(max(seq),0) FROM sqlite_sequence WHERE name='sync_queue'",
+                [],
+                |r| r.get(0),
+            )?;
+            max_position = max_position.max(old_sequence);
+        }
+        for table in ["messages", "deleted_messages"] {
+            if src.table_exists(None, table)? {
+                let mut stmt = src.prepare(&format!("SELECT id FROM {table} ORDER BY rowid"))?;
+                for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
+                    max_position += 1;
+                    c.exec(
+                        "INSERT INTO psms_events(revision,message_id,event_type) VALUES(?,?,?)",
+                        vec![max_position.into(), arg(&id?), arg("migration")],
+                    )
+                    .await?;
+                }
+            }
+        }
     }
     c.exec(
         "UPDATE psms_archive SET revision=? WHERE id=1",

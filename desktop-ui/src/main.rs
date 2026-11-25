@@ -32,6 +32,9 @@ enum Screen {
 struct Dashboard {
     db: Connection,
     path: PathBuf,
+    external: bool,
+    external_page: Option<(i64, bool, Vec<archive::Record>)>,
+    external_newest: i64,
     screen: Screen,
     dark: bool,
     starred: bool,
@@ -90,12 +93,23 @@ impl Dashboard {
     }
 
     fn refresh(&mut self) {
-        match archive::read(
-            &self.db,
-            self.page,
-            self.starred,
-            self.session_key.as_deref(),
-        ) {
+        let page = if self.external {
+            let records = self
+                .external_page
+                .as_ref()
+                .filter(|(page, star, _)| *page == self.page && *star == self.starred)
+                .map(|(_, _, items)| items.clone())
+                .unwrap_or_default();
+            Ok(archive::group(records, self.session_key.as_deref()))
+        } else {
+            archive::read(
+                &self.db,
+                self.page,
+                self.starred,
+                self.session_key.as_deref(),
+            )
+        };
+        match page {
             Ok((threads, older)) => {
                 if !threads
                     .iter()
@@ -434,7 +448,7 @@ impl Dashboard {
                 };
                 let mut actions=div().h_flex().items_center().gap_2().child(self.caption(m.time.clone()))
                     .child(Button::new(("star",i)).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
-                        if s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_err(){s.notice="Could not change this star.".into()}s.refresh();cx.notify()
+                        if !(if s.external { setup::cli(&s.path).and_then(|mut cmd|cmd.args(["storage","desktop-star",&id,&(!starred).to_string()]).output()).is_ok_and(|out|out.status.success()) } else {s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_ok()}) {s.notice="Could not change this star.".into()}s.refresh();cx.notify()
                     })));
                 if m.pgp {
                     let text = m.text.clone();
@@ -559,7 +573,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.next()
             .ok_or("open this application using psms desktop or psms settings")?,
     );
-    let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let suffix = |ext: &str| {
+        let mut s = path.as_os_str().to_os_string();
+        s.push(ext);
+        PathBuf::from(s)
+    };
+    let external = suffix(".storage.json").try_exists()?;
+    let settings_path = if external {
+        suffix(".settings.sqlite3")
+    } else {
+        path.clone()
+    };
+    let db = Connection::open_with_flags(&settings_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS desktop_preferences(id INTEGER PRIMARY KEY,starred_only INTEGER NOT NULL)")?;
     let only_starred = db.query_row(
         "SELECT coalesce((SELECT starred_only FROM desktop_preferences WHERE id=1),0)",
@@ -658,6 +683,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .detach();
                         cx.spawn(async move |this, cx| {
                             loop {
+                                let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
+                                if let Some((path,page,starred))=params {
+                                    let result=cx.background_executor().spawn(async move {
+                                        let mut cmd=setup::cli(&path).ok()?;
+                                        cmd.args(["storage","desktop-page",&page.to_string()]);
+                                        if starred {cmd.arg("--starred");}
+                                        let out=cmd.output().ok()?;
+                                        if !out.status.success(){return None;}
+                                        serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()
+                                    }).await;
+                                    if this.update(cx,|s,cx|{
+                                        if s.page!=page || s.starred!=starred{return;}
+                                        if let Some(v)=result.and_then(|v| {
+                                            let mut records=Vec::new();
+                                            for r in v["messages"].as_array()? {
+                                                let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get(0)).ok()?;
+                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time,r["starred"].as_i64()==Some(1)));
+                                            }
+                                            Some((records,v["newest"].as_i64()?))
+                                        }) {s.external_page=Some((page,starred,v.0));s.external_newest=v.1;} else {s.external_page=None;s.notice="Could not reach the selected database.".into();}
+                                        s.refresh();cx.notify();
+                                    }).is_err(){break;}
+                                }
                                 cx.background_executor().timer(Duration::from_secs(4)).await;
                                 if this
                                     .update(cx, |s, cx| {
@@ -681,6 +729,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .detach();
                         let mut s = Dashboard {
                             db,
+                            external, external_page:None, external_newest:0,
                             path,
                             screen: if settings {
                                 Screen::Settings

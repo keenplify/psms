@@ -111,6 +111,20 @@ impl Target {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    #[command(hide = true)]
+    DesktopPage {
+        page: u32,
+        #[arg(long)]
+        starred: bool,
+    },
+    #[command(hide = true)]
+    DesktopStar {
+        id: uuid::Uuid,
+        #[arg(action=clap::ArgAction::Set)]
+        value: bool,
+    },
+    /// Verify that the configured destination and running service are ready.
+    Status,
     /// Copy and verify a stopped SQLite archive, then select the new authoritative database.
     Switch {
         #[arg(value_enum)]
@@ -128,6 +142,41 @@ pub enum Command {
 }
 pub async fn run(path: &Path, command: Command) -> Result<()> {
     match command {
+        Command::DesktopPage { page, starred } => {
+            let target = runtime(path)
+                .await?
+                .ok_or("no external archive configured")?;
+            println!("{}", target.desktop_page(page, starred).await?);
+        }
+        Command::DesktopStar { id, value } => {
+            let target = runtime(path)
+                .await?
+                .ok_or("no external archive configured")?;
+            if !target.edit(&id.to_string(), Some(value)).await? {
+                return Err("message is unavailable".into());
+            }
+        }
+        Command::Status => {
+            let target = runtime(path).await?;
+            let addr = crate::daemon::running_address(path)
+                .map_err(|_| "cannot inspect running service")?
+                .ok_or("start pSMS first")?;
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(12))
+                .build()?
+                .get(format!("http://{addr}/readyz"))
+                .send()
+                .await?;
+            if !response.status().is_success() {
+                return Err("service readiness check failed".into());
+            }
+            if let Some(target) = target {
+                target.verify().await?;
+                println!("{:?} archive is active and writable.", target.engine);
+            } else {
+                println!("SQLite archive is active.");
+            }
+        }
         Command::Switch {
             engine,
             connection_file,

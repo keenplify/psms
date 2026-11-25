@@ -28,17 +28,24 @@ pub fn read(
     let mut stmt=db.prepare("SELECT m.id,m.sender,m.body,strftime('%Y-%m-%d %H:%M',m.archived_at,'unixepoch','localtime'),coalesce(f.starred,0)
         FROM messages m LEFT JOIN message_flags f ON m.id=f.message_id WHERE ?1=0 OR f.starred=1 ORDER BY m.rowid DESC LIMIT ?2 OFFSET ?3")?;
     let mut rows = stmt.query((starred, (LIMIT + 1) as i64, page * LIMIT as i64))?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        records.push((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ));
+    }
+    Ok(group(records, key))
+}
+pub type Record = (String, String, String, String, bool);
+pub fn group(records: Vec<Record>, key: Option<&str>) -> (Vec<Thread>, bool) {
+    let older = records.len() > LIMIT;
     let mut threads: Vec<Thread> = Vec::new();
     let mut groups = HashMap::new();
-    let mut count = 0;
-    while let Some(row) = rows.next()? {
-        if count == LIMIT {
-            return Ok((threads, true));
-        }
-        count += 1;
-        let id: String = row.get(0)?;
-        let provider: String = row.get(1)?;
-        let body: String = row.get(2)?;
+    for (id, provider, body, time, starred) in records.into_iter().take(LIMIT) {
         let pgp = provider == "papamo:openpgp:v1";
         let content = if provider == "papamo:encrypted:v1" {
             key.and_then(|s| decrypt(s, &body))
@@ -66,11 +73,11 @@ pub fn read(
         threads[idx].items.push(Mail {
             id,
             text,
-            time: row.get(3)?,
-            starred: row.get(4)?,
+            time,
+            starred,
             locked,
             pgp,
         });
     }
-    Ok((threads, false))
+    (threads, older)
 }

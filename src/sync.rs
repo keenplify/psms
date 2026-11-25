@@ -173,18 +173,18 @@ fn load_peers(db: &FilePath) -> Result<BTreeMap<String, String>, AnyError> {
     Ok(tokens)
 }
 #[derive(Serialize, Deserialize)]
-struct Change {
-    revision: i64,
-    id: uuid::Uuid,
-    snapshot: Option<Snapshot>,
+pub(crate) struct Change {
+    pub(crate) revision: i64,
+    pub(crate) id: uuid::Uuid,
+    pub(crate) snapshot: Option<Snapshot>,
 }
 #[derive(Serialize, Deserialize)]
-struct Snapshot {
-    contact_id: Option<String>,
-    sender: String,
-    body: String,
-    archived_at: i64,
-    starred: bool,
+pub(crate) struct Snapshot {
+    pub(crate) contact_id: Option<String>,
+    pub(crate) sender: String,
+    pub(crate) body: String,
+    pub(crate) archived_at: i64,
+    pub(crate) starred: bool,
 }
 
 fn spare_capacity() -> bool {
@@ -336,7 +336,21 @@ async fn worker(a: Archive, p: Pairing, http: reqwest::Client, interval: u64) {
     }
 }
 async fn send_batch(a: &Archive, p: &Pairing, http: &reqwest::Client) -> Result<bool, ()> {
-    let changes = a.query(read_batch).await.map_err(|_| ())?;
+    let changes = if let Some(target) = &a.remote {
+        let after = a
+            .query(|db| {
+                db.query_row(
+                    "SELECT revision FROM external_sync_cursor WHERE id=1",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .map_err(|_| ())?;
+        target.changes(after, BATCH).await.map_err(|_| ())?
+    } else {
+        a.query(read_batch).await.map_err(|_| ())?
+    };
     let Some(last) = changes.last().map(|c| c.revision) else {
         return Ok(false);
     };
@@ -351,9 +365,19 @@ async fn send_batch(a: &Archive, p: &Pairing, http: &reqwest::Client) -> Result<
     {
         return Err(());
     }
-    a.query(move |db| db.execute("DELETE FROM sync_queue WHERE seq<=?1", [last]))
-        .await
-        .map_err(|_| ())?;
+    let remote = a.remote.is_some();
+    a.query(move |db| {
+        if remote {
+            db.execute(
+                "UPDATE external_sync_cursor SET revision=?1 WHERE id=1 AND revision<?1",
+                [last],
+            )
+        } else {
+            db.execute("DELETE FROM sync_queue WHERE seq<=?1", [last])
+        }
+    })
+    .await
+    .map_err(|_| ())?;
     Ok(true)
 }
 
@@ -388,6 +412,13 @@ async fn accept_batch(
     }
     if !quiet().await {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+    if let Some(target) = &a.remote {
+        target
+            .apply_replicas(&source, changes)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        return Ok(Json(ack));
     }
     a.query(move |db| {
         let tx=db.unchecked_transaction()?;

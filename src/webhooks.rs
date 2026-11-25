@@ -91,7 +91,7 @@ async fn queue_external(a: &Archive, target: &crate::storage::Target) -> Result<
             let revision = row["revision"].as_i64().ok_or(rusqlite::Error::InvalidQuery)?;
             let id = row["message_id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
             let kind = row["event_type"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
-            if tx.execute("UPDATE external_hook_cursor SET revision=?1 WHERE id=1 AND revision<?1", [revision])? == 1 {
+            if tx.execute("UPDATE external_hook_cursor SET revision=?1 WHERE id=1 AND revision<?1", [revision])? == 1 && kind != "migration" {
                 tx.execute("INSERT INTO webhook_deliveries(endpoint,message_id,event) SELECT id,?1,?2 FROM webhook_endpoints", [id,kind])?;
             }
         }

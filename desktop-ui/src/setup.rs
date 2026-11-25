@@ -75,6 +75,9 @@ impl Dashboard {
         cx.notify()
     }
     pub fn newest(&self) -> i64 {
+        if self.external {
+            return self.external_newest;
+        }
         self.db.query_row("SELECT coalesce(max(rowid),0) FROM messages WHERE sender IN ('papamo:encrypted:v1','papamo:openpgp:v1')",[],|r|r.get(0)).unwrap_or(0)
     }
     pub fn setup_view(&self, cx: &mut Context<Self>) -> Div {

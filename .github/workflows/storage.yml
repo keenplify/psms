@@ -44,4 +44,4 @@ jobs:
             if "$app" storage check ${{ matrix.engine }} --connection-file "$RUNNER_TEMP/db-url"; then break; fi
             sleep 5
           done
-          "$app" --database "$RUNNER_TEMP/inbox.sqlite3" storage switch ${{ matrix.engine }} --connection-file "$RUNNER_TEMP/db-url"
+          python3 tests/storage.py ${{ matrix.engine }} "$RUNNER_TEMP/db-url"

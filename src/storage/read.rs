@@ -133,6 +133,63 @@ impl Target {
             .and_then(|v| v["revision"].as_i64())
             .ok_or("missing archive revision".into())
     }
+    pub async fn desktop_page(&self, page: u32, starred: bool) -> Result<Json> {
+        let mut c = self.open().await?;
+        let filter = if starred { " WHERE starred=1" } else { "" };
+        let offset = u64::from(page) * 40;
+        let pagination = if self.engine == super::Engine::Sqlserver {
+            format!("OFFSET {offset} ROWS FETCH NEXT 41 ROWS ONLY")
+        } else {
+            format!("LIMIT 41 OFFSET {offset}")
+        };
+        let sql = format!(
+            "SELECT {FIELDS} FROM psms_messages{filter} ORDER BY position_id DESC {pagination}"
+        );
+        let items = rows(c.as_mut(), &sql, vec![]).await?;
+        let newest = rows(
+            c.as_mut(),
+            "SELECT MAX(position_id) AS newest FROM psms_messages",
+            vec![],
+        )
+        .await?;
+        Ok(json!({"messages":items,"newest":newest[0]["newest"].as_i64().unwrap_or(0)}))
+    }
+    pub async fn replicas(&self, region: &str, cursor: i64, limit: usize) -> Result<Json> {
+        let mut c = self.open().await?;
+        let sql=self.limit("SELECT message_id AS id,provider AS sender,body,archived_at,starred,position_id FROM psms_replicas WHERE region=? AND body IS NOT NULL AND position_id<? ORDER BY position_id DESC",limit+1);
+        Ok(page(
+            rows(c.as_mut(), &sql, vec![arg(region), cursor.into()]).await?,
+            limit,
+            "messages",
+            "position_id",
+        ))
+    }
+    pub async fn changes(&self, after: i64, limit: usize) -> Result<Vec<crate::sync::Change>> {
+        let mut c = self.open().await?;
+        let sql=self.limit("SELECT e.revision,e.message_id,m.provider,m.body,m.archived_at,m.starred,m.contact_id FROM psms_events e LEFT JOIN psms_messages m ON m.id=e.message_id WHERE e.revision>? ORDER BY e.revision",limit);
+        rows(c.as_mut(), &sql, vec![after.into()])
+            .await?
+            .into_iter()
+            .map(|row| {
+                let snapshot = if let Some(sender) = row["provider"].as_str() {
+                    Some(crate::sync::Snapshot {
+                        sender: sender.into(),
+                        body: row["body"].as_str().ok_or("invalid message body")?.into(),
+                        archived_at: row["archived_at"].as_i64().ok_or("invalid timestamp")?,
+                        starred: row["starred"].as_i64() == Some(1),
+                        contact_id: row["contact_id"].as_str().map(String::from),
+                    })
+                } else {
+                    None
+                };
+                Ok(crate::sync::Change {
+                    revision: row["revision"].as_i64().ok_or("invalid revision")?,
+                    id: row["message_id"].as_str().ok_or("invalid ID")?.parse()?,
+                    snapshot,
+                })
+            })
+            .collect()
+    }
     pub async fn events(&self, after: i64) -> Result<Vec<Json>> {
         let mut c = self.open().await?;
         rows(c.as_mut(),&self.limit("SELECT revision,message_id,event_type FROM psms_events WHERE revision>? ORDER BY revision",32),vec![Value::I64(after)]).await

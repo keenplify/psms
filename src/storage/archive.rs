@@ -29,6 +29,8 @@ impl Target {
     ("psms_messages",format!("id VARCHAR(36) PRIMARY KEY NOT NULL,position_id BIGINT NOT NULL UNIQUE,provider VARCHAR(64) NOT NULL,body {text} NOT NULL,archived_at BIGINT NOT NULL,starred BIGINT NOT NULL,contact_id VARCHAR(64)")),
     ("psms_contacts","id VARCHAR(64) PRIMARY KEY NOT NULL,first_seen_at BIGINT NOT NULL,last_seen_at BIGINT NOT NULL".into()),
     ("psms_tombstones","id VARCHAR(36) PRIMARY KEY NOT NULL".into()),
+    ("psms_replicas",format!("id VARCHAR(104) PRIMARY KEY NOT NULL,region VARCHAR(64) NOT NULL,message_id VARCHAR(36) NOT NULL,position_id BIGINT NOT NULL,revision BIGINT NOT NULL,provider VARCHAR(64),body {text},archived_at BIGINT,starred BIGINT NOT NULL,contact_id VARCHAR(64)")),
+    ("psms_replica_contacts","id VARCHAR(130) PRIMARY KEY NOT NULL,region VARCHAR(64) NOT NULL,contact_id VARCHAR(64) NOT NULL,first_seen_at BIGINT NOT NULL,last_seen_at BIGINT NOT NULL".into()),
     ("psms_events","revision BIGINT PRIMARY KEY NOT NULL,message_id VARCHAR(36) NOT NULL,event_type VARCHAR(32) NOT NULL".into())
   ]{self.create(c,name,&cols).await?}
         if rows(c, "SELECT id FROM psms_archive WHERE id=1", vec![])
@@ -73,6 +75,85 @@ impl Target {
         )
         .await?;
         Ok(rev)
+    }
+    pub async fn apply_replicas(
+        &self,
+        region: &str,
+        changes: Vec<crate::sync::Change>,
+    ) -> Result<()> {
+        let mut c = self.write().await?;
+        for change in changes {
+            let id = change.id.to_string();
+            let key = arg(&format!("{region}/{id}"));
+            let old = rows(
+                c.as_mut(),
+                "SELECT revision,position_id FROM psms_replicas WHERE id=?",
+                vec![key.clone()],
+            )
+            .await?;
+            if old
+                .first()
+                .and_then(|r| r["revision"].as_i64())
+                .is_some_and(|v| v >= change.revision)
+            {
+                continue;
+            }
+            let position = if let Some(row) = old.first() {
+                c.exec("DELETE FROM psms_replicas WHERE id=?", vec![key.clone()])
+                    .await?;
+                row["position_id"]
+                    .as_i64()
+                    .ok_or("invalid replica position")?
+            } else {
+                c.exec(
+                    "UPDATE psms_archive SET revision=revision+1 WHERE id=1",
+                    vec![],
+                )
+                .await?;
+                rows(
+                    c.as_mut(),
+                    "SELECT revision FROM psms_archive WHERE id=1",
+                    vec![],
+                )
+                .await?[0]["revision"]
+                    .as_i64()
+                    .ok_or("invalid revision")?
+            };
+            let m = change.snapshot.as_ref();
+            let contact = m
+                .and_then(|m| m.contact_id.as_ref())
+                .map(|s| s.to_ascii_lowercase());
+            c.exec("INSERT INTO psms_replicas(id,region,message_id,position_id,revision,provider,body,archived_at,starred,contact_id) VALUES(?,?,?,?,?,?,?,?,?,?)",vec![key,arg(region),arg(&id),position.into(),change.revision.into(),m.map(|m|arg(&m.sender)).unwrap_or_default(),m.map(|m|arg(&m.body)).unwrap_or_default(),m.map(|m|Value::I64(m.archived_at)).unwrap_or_default(),i64::from(m.is_some_and(|m|m.starred)).into(),contact.as_deref().map(arg).unwrap_or_default()]).await?;
+            if let (Some(contact), Some(msg)) = (contact, m) {
+                let key = arg(&format!("{region}/{contact}"));
+                let t = msg.archived_at;
+                let old = rows(
+                    c.as_mut(),
+                    "SELECT first_seen_at,last_seen_at FROM psms_replica_contacts WHERE id=?",
+                    vec![key.clone()],
+                )
+                .await?;
+                if let Some(row) = old.first() {
+                    let first = row["first_seen_at"]
+                        .as_i64()
+                        .ok_or("invalid first seen")?
+                        .min(t);
+                    let last = row["last_seen_at"]
+                        .as_i64()
+                        .ok_or("invalid last seen")?
+                        .max(t);
+                    c.exec("UPDATE psms_replica_contacts SET first_seen_at=?,last_seen_at=? WHERE id=?",vec![first.into(),last.into(),key]).await?;
+                } else {
+                    c.exec(
+                        "INSERT INTO psms_replica_contacts VALUES(?,?,?,?,?)",
+                        vec![key, arg(region), arg(&contact), t.into(), t.into()],
+                    )
+                    .await?;
+                }
+            }
+        }
+        c.commit().await?;
+        Ok(())
     }
     pub async fn insert(&self, m: &crate::Message) -> Result<u16> {
         let mut c = self.write().await?;

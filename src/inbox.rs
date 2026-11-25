@@ -243,6 +243,13 @@ async fn replica_list(
     if !(1..=100).contains(&limit) || page.cursor.is_some_and(|v| v <= 0) {
         return Err(StatusCode::BAD_REQUEST);
     }
+    if let Some(target) = &archive.remote {
+        return remote_result(
+            target
+                .replicas(&source, page.cursor.unwrap_or(i64::MAX), limit)
+                .await,
+        );
+    }
     archive.query(move |db| {
         if !db.table_exists(None, "replicated_messages")? {return Ok(None)}
         let mut stmt=db.prepare("SELECT id,sender,body,archived_at,starred,rowid FROM replicated_messages WHERE region=?1 AND body IS NOT NULL AND rowid<?2 ORDER BY rowid DESC LIMIT ?3")?;
