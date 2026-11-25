@@ -1,5 +1,10 @@
 name: Native builds
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -35,3 +40,24 @@ jobs:
             target/${{ matrix.target }}/release/psms-desktop${{ matrix.ext }}
 
 
+# Release only after all platform builds and smoke tests pass.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: binaries
+      - name: Package native downloads
+        run: python scripts/package-release.py
+      - name: Publish verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --generate-notes --title "pSMS $RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --draft=false

@@ -56,11 +56,9 @@ Share a personalized signed copy privately with its owner. Keep the recovery key
 
 For a temporary Cloudflare URL run `psms tunnel quick`. For a named tunnel run `psms tunnel cloudflare --token-file PATH` after configuring a published hostname pointed at the address reported by `psms status`. Both commands require cloudflared on PATH. Other outbound tunnel clients can forward to the same origin. Verify bearer-header forwarding and encrypted POST delivery before using any new provider. A reachable HTTPS reverse proxy can go directly to pSMS. Fixed tunnel origins should use a fixed `--bind`. Running public tunnels and Apple signing are operator actions.
 
-## Four servers
+## Regional sync
 
-Publish one HTTPS hostname. With SQLite, route writes to one active service and its local database. Four ingress proxies can all forward to that same writer. A health-checked traffic manager can choose an available ingress automatically. Losing the writer interrupts uploads until the database is recovered or a synchronized standby is safely promoted. Independent SQLite files would split the archive. The phone should retry transient failures with the same message ID.
-
-For active application servers in four regions, add a shared database backend such as PostgreSQL first. Route the hostname through a health-checked load balancer, optionally using latency-based steering. Point all application instances at the same authoritative database and include storage availability in readiness checks before enabling automatic failover.
+Each archive accepts uploads locally and can sync its encrypted messages to a shared receiver. [Pair two archives and check the sync schedule](SYNC.md).
 
 ## Builds
 

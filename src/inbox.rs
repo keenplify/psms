@@ -23,7 +23,7 @@ impl Archive {
         })
     }
 
-    async fn query<T: Send + 'static>(
+    pub(crate) async fn query<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> ApiResult<T> {
@@ -57,6 +57,10 @@ async fn authorize(
 
 pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
     Router::new()
+        .route(
+            &format!("{prefix}/replicas/{{source}}/messages"),
+            get(replica_list),
+        )
         .route(&format!("{prefix}/messages"), get(list))
         .route(
             &format!("{prefix}/messages/{{id}}"),
@@ -172,4 +176,27 @@ fn found(count: usize) -> ApiResult<StatusCode> {
     } else {
         Ok(StatusCode::NO_CONTENT)
     }
+}
+
+async fn replica_list(
+    State(archive): State<Archive>,
+    Path(source): Path<String>,
+    Query(page): Query<Page>,
+) -> ApiResult<Json<Listing>> {
+    let limit = page.limit.unwrap_or(30);
+    if !(1..=100).contains(&limit) || page.cursor.is_some_and(|v| v <= 0) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    archive.query(move |db| {
+        if !db.table_exists(None, "replicated_messages")? {return Ok(None)}
+        let mut stmt=db.prepare("SELECT id,sender,body,archived_at,starred,rowid FROM replicated_messages WHERE region=?1 AND body IS NOT NULL AND rowid<?2 ORDER BY rowid DESC LIMIT ?3")?;
+        let rows=stmt.query_map(params![source,page.cursor.unwrap_or(i64::MAX),(limit+1) as i64], |r|Ok((r.get::<_,i64>(5)?,entry(r)?)))?;
+        let mut messages=Vec::new();
+        let mut last=None;
+        for row in rows { let (cursor,message)=row?;
+            if messages.len()==limit{return Ok(Some(Listing{messages,next_cursor:last}))}
+            last=Some(cursor);messages.push(message);
+        }
+        Ok(Some(Listing{messages,next_cursor:None}))
+    }).await?.map(Json).ok_or(StatusCode::NOT_FOUND)
 }

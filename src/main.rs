@@ -6,6 +6,7 @@ mod encryption;
 mod inbox;
 mod native;
 mod onboard;
+mod sync;
 #[cfg(windows)]
 mod tray;
 mod tunnel;
@@ -119,6 +120,9 @@ fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>>
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut cli = cli::Cli::parse();
     let db_path = database_path(cli.options.database.take())?;
+    if let Some(cli::Command::Sync { command }) = cli.command {
+        return sync::setup(&db_path, command);
+    }
     let preferred = "127.0.0.1:47832".parse()?;
     if let Some(cli::Command::Tunnel { provider }) = cli.command {
         let bind = cli
@@ -226,11 +230,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         owner: owner.map(|value| format!("Bearer {value}").into()),
         providers: Arc::new(encryption::providers()?),
     };
+    let sync_routes = sync::configure(&archive, &db_path)?;
     let app = Router::new()
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .merge(inbox::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .merge(sync_routes)
         .with_state(archive);
     let listener = match tokio::net::TcpListener::bind(cli.options.bind.unwrap_or(preferred)).await
     {

@@ -17,6 +17,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Pair archives, enable scheduled synchronization or inspect the queue.
+    Sync {
+        #[command(subcommand)]
+        command: crate::sync::Command,
+    },
     /// Initialize the archive and start the background service (default).
     Init,
     /// Prepare a private, preconfigured Actions shortcut for this archive.
