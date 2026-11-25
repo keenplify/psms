@@ -81,3 +81,7 @@ Run `cargo build --locked --release` on the target system. CI builds and tests L
 
 MIT.
 
+
+### Desktop installation
+
+The Windows x64 installer adds pSMS to your desktop, Start menu, and Installed Apps for the current user. Close the desktop window before upgrading. On Debian or Ubuntu install the matching local package with `sudo apt install ./psms-linux-x64.deb`. On Fedora use `sudo dnf install ./psms-linux-x64.rpm`. Substitute `arm64` on 64-bit ARM. Both packages register pSMS in the applications menu and request a desktop shortcut at your next graphical login or first launch. Desktop environments control whether desktop icons are displayed and may ask you to allow launching. Portable archives remain available for all platforms.

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=pSMS desktop shortcut
+Exec=/usr/lib/psms/desktop-entry shortcut
+TryExec=/usr/lib/psms/desktop-entry
+Terminal=false
+NoDisplay=true

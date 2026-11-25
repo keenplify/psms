@@ -1,6 +1,7 @@
 """Package all native CI artifacts, preserving POSIX executable permissions."""
 import hashlib
 import os
+import shutil
 from pathlib import Path
 import tarfile
 import tomllib
@@ -33,6 +34,14 @@ for target, label in targets.items():
                 info.mode = 0o755 if file in files else 0o644
                 with file.open("rb") as stream:
                     tar.addfile(info, stream)
-    with archive.open("rb") as stream:
-        checksums.append(hashlib.file_digest(stream, "sha256").hexdigest() + "  " + archive.name)
+    installers = []
+    if windows:
+        installers = [f"psms-{label}-setup.exe"]
+    elif label.startswith("linux-"):
+        installers = [f"psms-{label}.deb", f"psms-{label}.rpm"]
+    for name in installers:
+        shutil.copyfile(folder / name, out / name)
+for file in sorted(out.iterdir()):
+    with file.open("rb") as stream:
+        checksums.append(hashlib.file_digest(stream, "sha256").hexdigest() + "  " + file.name)
 (out / "SHA256SUMS").write_text("\n".join(checksums) + "\n")

@@ -218,6 +218,19 @@ impl Render for Dashboard {
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Desktop shortcuts launch this GUI binary directly. The CLI owns archive initialization.
+    if std::env::args_os().len() == 1 {
+        let path = std::env::current_exe()?
+            .with_file_name(format!("psms{}", std::env::consts::EXE_SUFFIX));
+        let mut cli = std::process::Command::new(path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cli.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        cli.arg("desktop").spawn()?;
+        return Ok(());
+    }
     let mut args = std::env::args_os().skip(1);
     let settings = args.next().is_some_and(|s| s == "settings");
     let path = PathBuf::from(

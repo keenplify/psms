@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=pSMS
+Comment=Open your encrypted message archive
+Exec=/usr/lib/psms/desktop-entry open
+TryExec=/usr/bin/psms
+Icon=dev.papamo.psms
+Terminal=false
+Categories=Utility;

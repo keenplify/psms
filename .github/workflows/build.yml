@@ -32,12 +32,47 @@ jobs:
         with:
           python-version: "3.x"
       - run: python tests/smoke.py target/${{ matrix.target }}/release/psms${{ matrix.ext }}
+      - name: Build Windows installer with NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (!(Test-Path $compiler)) { choco install nsis -y --no-progress; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
+          $bin = (Resolve-Path target/${{ matrix.target }}/release).Path
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          & $compiler /V2 "/DBIN_DIR=$bin" "/DVERSION=$version" packaging/windows/psms.nsi
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $setup = Start-Process "$bin/psms-windows-x64-setup.exe" -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installer failed" }
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($link in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'pSMS.lnk'), (Join-Path ([Environment]::GetFolderPath('Programs')) 'Papamo SMS/pSMS.lnk'))) {
+            if (!(Test-Path $link) -or !(Test-Path ($shell.CreateShortcut($link).TargetPath))) { throw "Missing working shortcut: $link" }
+          }
+      - name: Build Linux installers with CPack
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          sudo apt-get install -y rpm desktop-file-utils
+          desktop-file-validate packaging/linux/dev.papamo.psms.desktop packaging/linux/autostart.desktop
+          bin="$PWD/target/${{ matrix.target }}/release"
+          label=linux-x64
+          if [[ "${{ matrix.target }}" == aarch64* ]]; then label=linux-arm64; fi
+          cmake -S packaging/linux -B target/package-linux -DCMAKE_INSTALL_PREFIX=/usr -DBIN_DIR="$bin" -DLABEL="$label"
+          cpack --config target/package-linux/CPackConfig.cmake -G DEB -B "$bin"
+          cpack --config target/package-linux/CPackConfig.cmake -G RPM -B "$bin"
+          dpkg-deb -c "$bin/psms-$label.deb" > target/psms-deb-list.txt
+          grep -F 'usr/share/applications/dev.papamo.psms.desktop' target/psms-deb-list.txt
+          rpm -qpl "$bin/psms-$label.rpm" | grep -Fx '/usr/share/applications/dev.papamo.psms.desktop'
       - uses: actions/upload-artifact@v4
         with:
           name: papamo-sms-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/psms${{ matrix.ext }}
             target/${{ matrix.target }}/release/psms-desktop${{ matrix.ext }}
+            target/${{ matrix.target }}/release/psms-windows-x64-setup.exe
+            target/${{ matrix.target }}/release/psms-linux-*.deb
+            target/${{ matrix.target }}/release/psms-linux-*.rpm
 
 
 # Release only after all platform builds and smoke tests pass.

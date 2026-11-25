@@ -40,23 +40,10 @@ pub fn start(db: &Path, stop: PathBuf) -> Result<Tray, Box<dyn Error>> {
         let exit = MenuItem::with_id("exit", "Exit", true, None);
         let make = || -> Result<_, Box<dyn Error>> {
             menu.append_items(&[&open, &settings, &exit])?;
-            let pixels = (0..16 * 16)
-                .flat_map(|i| {
-                    let (x, y) = (i % 16, i / 16);
-                    if (3..=5).contains(&x) && (3..=12).contains(&y)
-                        || (5..=11).contains(&x) && (y == 3 || y == 8)
-                        || x == 11 && (4..8).contains(&y)
-                    {
-                        [220, 255, 161, 255]
-                    } else {
-                        [21, 66, 52, 255]
-                    }
-                })
-                .collect();
             Ok(TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
                 .with_tooltip("pSMS · Papamo SMS")
-                .with_icon(Icon::from_rgba(pixels, 16, 16)?)
+                .with_icon(Icon::from_resource(1, Some((32, 32)))?)
                 .build()?)
         };
         let _icon = match make() {

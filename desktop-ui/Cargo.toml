@@ -1,6 +1,6 @@
 [package]
 name = "psms-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
@@ -10,3 +10,6 @@ base64 = "0.23.1"
 gpui-kit = "0.11.0"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde_json = "1.0.154"
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.34"
