@@ -133,4 +133,4 @@ Start your archive, put the pSMS executable on PATH, and register its stdio serv
 
 For a remote archive, append `--server https://YOUR-HOST/v1 --token-file /private/owner-token.txt` to the pSMS command. Add `--key-file /private/archive-recovery-key.txt` only when you want the client to receive decrypted Actions messages. The key stays on the machine running pSMS MCP. Your AI client receives matching plaintext when you enable decryption. Without the key, the server returns metadata.
 
-Tools include `search_messages` (text, sender, date range, starred status and cursor), `get_message` (UUID), and `list_contacts` (opaque contact ID and optional message expansion). Follow the search cursor even when a filtered page is empty.
+Tools include `search_messages` (text, sender, date range, starred status and cursor), `get_message` (UUID), `list_contacts` (opaque contact ID and optional message expansion), and `contact_history` (exact sender or private contact ID with pagination). Follow the search cursor even when a filtered page is empty.
