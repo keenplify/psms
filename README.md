@@ -1,6 +1,8 @@
 # pSMS (Papamo SMS)
 
-An open-source Rust service that archives incoming texts forwarded by an iPhone Shortcut. The starter supports a single trusted archive per instance. SQLite is bundled.
+pSMS is an MIT-licensed, self-hosted message archive written in Rust. Its REST API accepts encrypted uploads. iPhone Shortcuts capture is available today, and Android capture is planned. Each instance hosts one local archive with bundled SQLite. A sync webhook can write changes to a database of your choice through a compatible receiver.
+
+[Download pSMS](https://www.papamo.dev/sms) · [Setup guide, REST API and webhook contract](https://www.papamo.dev/docs/papamo-sms)
 
 ## Run
 
