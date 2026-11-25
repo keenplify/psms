@@ -85,3 +85,21 @@ MIT.
 ### Desktop installation
 
 The Windows x64 installer adds pSMS to your desktop, Start menu, and Installed Apps for the current user. Close the desktop window before upgrading. On Debian or Ubuntu install the matching local package with `sudo apt install ./psms-linux-x64.deb`. On Fedora use `sudo dnf install ./psms-linux-x64.rpm`. Substitute `arm64` on 64-bit ARM. Both packages register pSMS in the applications menu and request a desktop shortcut at your next graphical login or first launch. Desktop environments control whether desktop icons are displayed and may ask you to allow launching. Portable archives remain available for all platforms.
+
+## Contacts, access tokens and webhooks
+
+Use a separate archive database and credentials for each recipient. The new encrypted shortcut attaches a private contact ID. The sender and body remain inside the encrypted envelope. Repeat senders are recognizable within a shortcut key. A new key starts a new contact index. Older encrypted uploads without an ID remain readable and do not create a contact.
+
+To search, run `psms contact-id --key-file archive-recovery-key.txt` on the owner's device and enter the exact sender tag or phone number. Use the resulting ID with `GET /v1/contacts?contact_id=ID`. Owner routes also include `GET /v1/contacts/ID?include=messages` and `GET /v1/contacts/ID/messages`. Expansion includes up to five encrypted messages per contact. Follow the returned cursor on the messages endpoint for more.
+
+In desktop Settings, create an Owner API token or a Browser autofill token, choose an expiration and click **Copy token**. Rotation replaces the selected token immediately. Revocation disables it. Existing installation administrator credentials remain separately managed. Browser tokens can only fetch recent encrypted Actions envelopes. Use separate tokens per webhook destination. Event delivery credentials must be available to the sending daemon, so protect archive files and backups.
+
+Create HTTPS destinations under Settings, or use `POST /v1/webhooks` with an owner bearer token and a JSON object containing `url`. List with GET, rotate with `POST /v1/webhooks/ID/rotate`, and remove with `DELETE /v1/webhooks/ID`. Creation and rotation return the new token once. Each destination receives a JSON object with delivery_id, event and message_id. Handle repeated deliveries idempotently. Message content and sender names are excluded.
+
+## Browser autofill
+
+Download the Chrome or Firefox extension ZIP from this release. For Chrome, unzip it, open chrome://extensions, enable Developer mode, and choose Load unpacked. For Firefox testing, open about:debugging, choose This Firefox and Load Temporary Add-on, and select the ZIP. Firefox temporary installation lasts until the browser restarts.
+
+Open the extension to detect pSMS on the default local port or enter the full API address for a custom port or HTTPS server. Enter a **Browser autofill** token from pSMS Settings and the private Actions recovery key. They stay in extension session storage until you lock or restart the browser. Enable autofill individually on each sign-in site.
+
+Focus the verification-code field. A recent SMS ending in a line such as `@example.com #123456` can show **Autofill from GLOBE** and **123 456**. Click the suggestion to fill the field. The extension decrypts on this device, verifies the exact HTTPS hostname and ignores unbound SMS and messages over five minutes old. The sender label comes from the message and does not certify the sender.

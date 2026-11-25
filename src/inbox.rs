@@ -15,12 +15,26 @@ use uuid::Uuid;
 type ApiResult<T> = Result<T, StatusCode>;
 
 impl Archive {
+    fn app_token(&self, headers: &HeaderMap, scope: &str) -> bool {
+        let Some(token) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "))
+        else {
+            return false;
+        };
+        token.len() == 64
+            && self
+                .db
+                .lock()
+                .ok()
+                .is_some_and(|db| crate::app_tokens::accepts(&db, scope, token).unwrap_or(false))
+    }
     pub(super) fn is_owner(&self, headers: &HeaderMap) -> bool {
         self.owner.as_ref().is_some_and(|expected| {
             headers
                 .get(header::AUTHORIZATION)
                 .is_some_and(|given| bool::from(expected.as_bytes().ct_eq(given.as_bytes())))
-        })
+        }) || self.app_token(headers, "api")
     }
 
     pub(crate) async fn query<T: Send + 'static>(
@@ -57,10 +71,6 @@ async fn authorize(
 
 pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
     Router::new()
-        .route(
-            &format!("{prefix}/replicas/{{source}}/messages"),
-            get(replica_list),
-        )
         .route(&format!("{prefix}/messages"), get(list))
         .route(
             &format!("{prefix}/messages/{{id}}"),
@@ -72,19 +82,26 @@ pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
                 Json(archive.providers.as_ref().clone())
             }),
         )
+        .merge(crate::webhooks::routes(prefix))
+        .merge(crate::contacts::routes(prefix))
         .route_layer(middleware::from_fn_with_state(archive, authorize))
+        .route(&format!("{prefix}/otp/recent"), get(recent_for_browser))
+        .route(
+            &format!("{prefix}/replicas/{{source}}/messages"),
+            get(replica_list),
+        )
 }
 
 #[derive(Serialize)]
-struct Entry {
+pub(crate) struct Entry {
     id: String,
     sender: String,
     body: String,
     archived_at: i64,
     starred: bool,
 }
-const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
-fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+pub(crate) const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
+pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: row.get(0)?,
         sender: row.get(1)?,
@@ -180,9 +197,17 @@ fn found(count: usize) -> ApiResult<StatusCode> {
 
 async fn replica_list(
     State(archive): State<Archive>,
+    headers: HeaderMap,
     Path(source): Path<String>,
     Query(page): Query<Page>,
 ) -> ApiResult<Json<Listing>> {
+    if !archive.replica_reader.as_ref().is_some_and(|reader| {
+        headers
+            .get(header::AUTHORIZATION)
+            .is_some_and(|v| bool::from(reader.as_bytes().ct_eq(v.as_bytes())))
+    }) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let limit = page.limit.unwrap_or(30);
     if !(1..=100).contains(&limit) || page.cursor.is_some_and(|v| v <= 0) {
         return Err(StatusCode::BAD_REQUEST);
@@ -199,4 +224,15 @@ async fn replica_list(
         }
         Ok(Some(Listing{messages,next_cursor:None}))
     }).await?.map(Json).ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn recent_for_browser(
+    State(a): State<Archive>,
+    headers: HeaderMap,
+) -> ApiResult<impl axum::response::IntoResponse> {
+    if !a.app_token(&headers, "browser") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let rows=a.query(|db|db.prepare("SELECT body,archived_at FROM messages WHERE sender='papamo:encrypted:v1' AND archived_at BETWEEN unixepoch()-300 AND unixepoch() ORDER BY rowid DESC LIMIT 25")?.query_map([],|r|Ok(serde_json::json!({"body":r.get::<_,String>(0)?,"archived_at":r.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()).await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(rows)))
 }

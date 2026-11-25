@@ -11,7 +11,7 @@ Use sync if you want a second computer to hold a readable copy of encrypted mess
 
 3. On the **sender**, run `psms sync connect home.pairing.json`. On each computer, restart the running instance with `psms stop` followed by `psms init`. For a system service, restart that service instead. Use the same OS account and database path used by your running instance for all commands. Store pairing files in a private directory.
 4. Run `psms sync status` on the sender to see its pending message count. The first pass includes previously saved encrypted messages. Existing plaintext bodies are excluded.
-5. On the receiver, use the owner's bearer token with `GET /v1/replicas/home/messages` to read the replica. The usual limit and cursor pagination parameters apply. Stars and deletions originate on the source. The native inbox shows the local archive.
+5. On the receiver, configure a dedicated PAPAMO_REPLICA_READ_TOKEN of at least 32 characters, restart the receiver, and use that operator token with `GET /v1/replicas/home/messages` to read the replica. The usual limit and cursor pagination parameters apply. Stars and deletions originate on the source. The native inbox shows the local archive.
 
 ## When data moves
 

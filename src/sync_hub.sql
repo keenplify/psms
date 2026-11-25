@@ -8,3 +8,8 @@ CREATE VIEW IF NOT EXISTS regional_inbox AS
  FROM messages m LEFT JOIN message_flags f ON f.message_id=m.id
  UNION ALL
  SELECT region,id,sender,body,archived_at,starred FROM replicated_messages WHERE body IS NOT NULL;
+CREATE TABLE IF NOT EXISTS replicated_contacts(region TEXT NOT NULL,id TEXT NOT NULL,first_seen_at INTEGER NOT NULL,last_seen_at INTEGER NOT NULL, PRIMARY KEY(region,id));
+CREATE TABLE IF NOT EXISTS replicated_message_contacts (
+ region TEXT NOT NULL, message_id TEXT NOT NULL, contact_id TEXT NOT NULL,
+ PRIMARY KEY(region,message_id), FOREIGN KEY(region,message_id) REFERENCES replicated_messages(region,id)
+);

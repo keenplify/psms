@@ -22,6 +22,12 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::sync::Command,
     },
+    /// Read a sender ID or phone number from stdin and calculate its lookup ID offline.
+    ContactId {
+        /// The recovery key file generated for the originating shortcut.
+        #[arg(long)]
+        key_file: PathBuf,
+    },
     /// Initialize the archive and start the background service (default).
     Init,
     /// Prepare a private, preconfigured Actions shortcut for this archive.

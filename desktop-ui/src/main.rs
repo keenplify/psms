@@ -1,220 +1,509 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
-use base64::{Engine, engine::general_purpose::STANDARD};
+mod access;
+#[path = "../../src/app_tokens.rs"]
+#[allow(dead_code)]
+mod app_tokens;
+mod archive;
+#[path = "../../src/hook_store.rs"]
+mod hook_store;
+mod setup;
+use archive::Thread;
 use gpui_kit::{
     component::{
-        button::Button,
+        button::{Button, ButtonVariants},
         input::{Input, InputState},
         *,
     },
     *,
 };
 use rusqlite::{Connection, OpenFlags};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
-struct Message {
-    id: String,
-    provider: String,
-    body: String,
-    time: String,
-    starred: bool,
+const INK: u32 = 0x20232b;
+const MUTED: u32 = 0x586373;
+const BLUE: u32 = 0x2366c9;
+const GUIDE: &str = "https://www.papamo.dev/docs/papamo-sms";
+#[derive(Clone, Copy, PartialEq)]
+enum Screen {
+    Inbox,
+    Settings,
+    Setup,
 }
 struct Dashboard {
     db: Connection,
     path: PathBuf,
-    settings: bool,
-    only_starred: bool,
+    screen: Screen,
+    starred: bool,
     page: i64,
-    rows: Vec<Message>,
+    older: bool,
+    threads: Vec<Thread>,
+    selected: Option<String>,
+    search: Entity<InputState>,
     key: Entity<InputState>,
+    endpoint: Entity<InputState>,
+    delivery_url: Entity<InputState>,
+    issued: Option<(String, String)>,
+    expiry: Option<u32>,
+    hook_url: Entity<InputState>,
+    hook_token: Entity<InputState>,
+    session_key: Option<String>,
+    unlock_box: bool,
     notice: String,
-    revealed: Option<(String, String)>,
+    step: u8,
+    folder: Option<PathBuf>,
+    baseline: i64,
+    logo: Arc<Image>,
+    data_version: i64,
+}
+fn heading(text: impl Into<SharedString>) -> Div {
+    div()
+        .text_2xl()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(INK))
+        .child(text.into())
+}
+fn caption(text: impl Into<SharedString>) -> Div {
+    div().text_sm().text_color(rgb(MUTED)).child(text.into())
+}
+fn button(id: &'static str, label: &'static str) -> Button {
+    Button::new(id).label(label)
 }
 impl Dashboard {
     fn refresh(&mut self) {
-        self.revealed = None;
-        let result = (|| -> rusqlite::Result<Vec<Message>> {
-            let mut q=self.db.prepare("SELECT m.id,m.sender,m.body,datetime(m.archived_at,'unixepoch','localtime'),coalesce(f.starred,0) FROM messages m LEFT JOIN message_flags f ON m.id=f.message_id WHERE ?1=0 OR f.starred=1 ORDER BY m.rowid DESC LIMIT 21 OFFSET ?2")?;
-            q.query_map((self.only_starred, self.page * 20), |r| {
-                Ok(Message {
-                    id: r.get(0)?,
-                    provider: r.get(1)?,
-                    body: r.get(2)?,
-                    time: r.get(3)?,
-                    starred: r.get(4)?,
-                })
-            })?
-            .collect()
-        })();
-        match result {
-            Ok(rows) => {
-                self.rows = rows;
-                self.notice.clear();
+        match archive::read(
+            &self.db,
+            self.page,
+            self.starred,
+            self.session_key.as_deref(),
+        ) {
+            Ok((threads, older)) => {
+                if !threads
+                    .iter()
+                    .any(|t| Some(&t.key) == self.selected.as_ref())
+                {
+                    self.selected = threads.first().map(|t| t.key.clone())
+                }
+                self.threads = threads;
+                self.older = older;
             }
-            Err(e) => self.notice = format!("Could not read archive: {e}"),
+            Err(_) => self.notice = "Could not read this archive. Refresh to try again.".into(),
         }
     }
-    fn decrypt(&mut self, index: usize, cx: &App) {
-        let Some(row) = self.rows.get(index) else {
-            return;
-        };
-        let key = self.key.read(cx).value();
-        let decoded = (|| {
-            let bytes = STANDARD.decode(&row.body).ok()?;
-            if bytes.len() <= 28 {
-                return None;
-            }
-            let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).ok()?;
-            let clear = cipher
-                .decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
-                .ok()?;
-            let json: serde_json::Value = serde_json::from_slice(&clear).ok()?;
-            Some(format!(
-                "{}\n{}",
-                json.get("sender")?.as_str()?,
-                json.get("body")?.as_str()?
-            ))
-        })();
-        self.revealed = decoded.map(|s| (row.id.clone(), s));
-        self.notice = if self.revealed.is_some() {
-            String::new()
-        } else {
-            "Unable to decrypt. Check the archive key.".into()
-        };
+    fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        self.issued = None;
+        self.screen = screen;
+        self.notice.clear();
+        self.unlock_box = false;
+        self.refresh();
+        cx.notify();
     }
-}
-impl Render for Dashboard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut panel = div()
-            .id("archive")
+    fn toggle_filter(&mut self, cx: &mut Context<Self>) {
+        let next = !self.starred;
+        match self.db.execute("INSERT INTO desktop_preferences(id,starred_only) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET starred_only=excluded.starred_only",[next]){
+            Ok(_)=>{self.starred=next;self.page=0;self.refresh()},Err(_)=>self.notice="Could not save inbox preference.".into(),
+        }
+        cx.notify();
+    }
+    fn sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.search.read(cx).value().trim().to_lowercase();
+        let mut list = div()
+            .id("thread-list")
             .v_flex()
-            .size_full()
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
-            .p_6()
-            .gap_4()
+            .px_2()
+            .gap_1();
+        let mut shown = 0;
+        for (i, t) in self.threads.iter().enumerate() {
+            if !query.is_empty()
+                && !t.title.to_lowercase().contains(&query)
+                && !t
+                    .items
+                    .iter()
+                    .any(|m| !m.locked && m.text.to_lowercase().contains(&query))
+            {
+                continue;
+            }
+            shown += 1;
+            let m = &t.items[0];
+            let selected = self.selected.as_ref() == Some(&t.key);
+            let initials = if m.locked {
+                "•".into()
+            } else {
+                t.title
+                    .split_whitespace()
+                    .take(2)
+                    .filter_map(|s| s.chars().next())
+                    .collect::<String>()
+            };
+            let preview: String = if m.locked {
+                "Unlock to read".into()
+            } else {
+                m.text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(70)
+                    .collect()
+            };
+            let key = t.key.clone();
+            list = list.child(
+                div()
+                    .id(("conversation", i))
+                    .h_flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .bg(rgb(if selected { BLUE } else { 0xf1f3f6 }))
+                    .on_click(cx.listener(move |s, _, _, cx| {
+                        s.selected = Some(key.clone());
+                        s.show(Screen::Inbox, cx)
+                    }))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .size(px(36.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(rgb(if selected { 0x467ed3 } else { 0xd7dce3 }))
+                            .text_color(rgb(if selected { 0xffffff } else { MUTED }))
+                            .child(initials),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .min_w_0()
+                            .flex_1()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(if selected { 0xffffff } else { INK }))
+                                    .child(t.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(rgb(if selected { 0xe6efff } else { MUTED }))
+                                    .child(preview),
+                            ),
+                    ),
+            );
+        }
+        if shown == 0 {
+            list = list.child(div().p_3().child(caption(if query.is_empty() {
+                "Your conversations will appear here."
+            } else {
+                "No matches on this page."
+            })))
+        }
+        div()
+            .v_flex()
+            .w(px(278.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(0xf1f3f6))
+            .border_r_1()
+            .border_color(rgb(0xd3d8df))
+            .child(
+                div()
+                    .v_flex()
+                    .p_4()
+                    .gap_3()
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(img(self.logo.clone()).size(px(30.)))
+                            .child(heading("Messages")),
+                    )
+                    .child(Input::new(&self.search))
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(
+                                button(
+                                    "filter",
+                                    if self.starred {
+                                        "Starred only"
+                                    } else {
+                                        "All messages"
+                                    },
+                                )
+                                .on_click(cx.listener(|s, _, _, cx| s.toggle_filter(cx))),
+                            )
+                            .child(button("refresh", "Refresh").ghost().on_click(cx.listener(
+                                |s, _, _, cx| {
+                                    s.refresh();
+                                    cx.notify()
+                                },
+                            ))),
+                    ),
+            )
+            .child(list)
             .child(
                 div()
                     .h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().text_xl().child("pSMS"))
+                    .gap_1()
+                    .px_3()
+                    .py_2()
                     .child(
-                        Button::new("inbox")
-                            .label("Dashboard")
-                            .on_click(cx.listener(|s, _, _, cx| {
-                                s.settings = false;
-                                s.refresh();
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("settings")
-                            .label("Settings")
-                            .on_click(cx.listener(|s, _, _, cx| {
-                                s.settings = true;
-                                s.revealed = None;
-                                cx.notify();
-                            })),
-                    ),
-            );
-        if self.settings {
-            panel=panel.child(div().text_xl().child("Archive settings"))
-                .child(format!("Archive: {}",self.path.display()))
-                .child(Button::new("setup-guide").label("Setup guide").on_click(|_, _, cx| cx.open_url("https://papamo.dev/docs/papamo-sms")))
-                .child(Button::new("filter").label(if self.only_starred{"Show all messages"}else{"Show starred messages only"}).on_click(cx.listener(|s,_,_,cx|{
-                    let next=!s.only_starred;
-                    match s.db.execute("INSERT INTO desktop_preferences(id,starred_only) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET starred_only=excluded.starred_only",[next]){
-                        Ok(_)=>{s.only_starred=next;s.page=0;s.refresh();s.notice="Preference saved.".into();},Err(e)=>s.notice=e.to_string()
-                    }cx.notify();
-                }))).child("New messages require an encrypted envelope. Configure the phone and remote connection from the pSMS CLI.");
-        } else {
-            panel = panel
-                .child(div().text_xl().child("Message archive"))
-                .child(Input::new(&self.key))
-                .child(
-                    Button::new("refresh")
-                        .label("Refresh")
-                        .on_click(cx.listener(|s, _, _, cx| {
-                            s.refresh();
-                            cx.notify();
-                        })),
-                );
-            if self.rows.is_empty() {
-                panel = panel.child("No messages on this page.");
-            }
-            for (index, row) in self.rows.iter().take(20).enumerate() {
-                let mut card = div()
-                    .v_flex()
-                    .border_1()
-                    .p_3()
-                    .gap_2()
-                    .child(row.time.clone());
-                let action = row.provider == "papamo:encrypted:v1";
-                if action {
-                    card = card.child(
-                        Button::new(("decrypt", index))
-                            .label("Decrypt Actions message")
-                            .on_click(cx.listener(move |s, _, _, cx| {
-                                s.decrypt(index, cx);
-                                cx.notify();
-                            })),
-                    );
-                } else if row.provider == "papamo:openpgp:v1" {
-                    card = card.child(
-                        Button::new(("copy", index))
-                            .label("Copy encrypted PGP message")
-                            .on_click(cx.listener(move |s, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    s.rows[index].body.clone(),
-                                ));
-                                s.notice = "Encrypted message copied.".into();
-                                cx.notify();
-                            })),
-                    );
-                } else {
-                    card = card.child(row.provider.clone()).child(row.body.clone());
-                }
-                if let Some((id, text)) = &self.revealed
-                    && id == &row.id
-                {
-                    card = card.child(text.clone());
-                }
-                let id = row.id.clone();
-                let starred = row.starred;
-                card=card.child(Button::new(("star",index)).label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move |s,_,_,cx|{
-                    match s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES (?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)){
-                        Ok(_)=>s.refresh(),Err(e)=>s.notice=e.to_string()
-                    }cx.notify();
-                })));
-                panel = panel.child(card);
-            }
-            panel = panel.child(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("prev")
-                            .label("Newer")
+                        button("prev", "Newer")
+                            .ghost()
                             .disabled(self.page == 0)
                             .on_click(cx.listener(|s, _, _, cx| {
                                 s.page = (s.page - 1).max(0);
                                 s.refresh();
-                                cx.notify();
+                                cx.notify()
                             })),
                     )
                     .child(
-                        Button::new("next")
-                            .label("Older")
-                            .disabled(self.rows.len() <= 20)
+                        button("next", "Older")
+                            .ghost()
+                            .disabled(!self.older)
                             .on_click(cx.listener(|s, _, _, cx| {
                                 s.page += 1;
                                 s.refresh();
-                                cx.notify();
+                                cx.notify()
                             })),
+                    ),
+            )
+            .child(
+                div().border_t_1().border_color(rgb(0xd3d8df)).p_3().child(
+                    button("config", "Settings")
+                        .ghost()
+                        .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Settings, cx))),
+                ),
+            )
+    }
+    fn unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let key = self.key.read(cx).value().to_string();
+        if key.len() != 32 {
+            self.notice = "Use the 32-character key from archive-recovery-key.txt.".into();
+            cx.notify();
+            return;
+        }
+        let valid=self.db.query_row("SELECT body FROM messages WHERE sender='papamo:encrypted:v1' ORDER BY rowid DESC LIMIT 1",[],|r|r.get::<_,String>(0));
+        if valid.is_ok()
+            && !self
+                .threads
+                .iter()
+                .flat_map(|t| &t.items)
+                .any(|m| m.locked && !m.pgp && archive::decrypt(&key, &m.text).is_some())
+            && valid.is_ok_and(|v| archive::decrypt(&key, &v).is_none())
+        {
+            self.notice = "This key could not unlock a message on this page.".into();
+            cx.notify();
+            return;
+        }
+        self.session_key = Some(key);
+        self.key.update(cx, |i, cx| i.set_value("", window, cx));
+        self.unlock_box = false;
+        self.notice = "Archive key loaded for this window.".into();
+        self.refresh();
+        cx.notify();
+    }
+    fn inbox(&self, cx: &mut Context<Self>) -> Div {
+        let thread = self
+            .threads
+            .iter()
+            .find(|t| Some(&t.key) == self.selected.as_ref());
+        let mut pane = div().v_flex().flex_1().min_w_0().h_full().bg(rgb(0xffffff));
+        let title = thread
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| "Inbox".into());
+        pane = pane.child(
+            div()
+                .h_flex()
+                .items_center()
+                .justify_between()
+                .px_5()
+                .py_3()
+                .bg(rgb(0xf9fafb))
+                .border_b_1()
+                .border_color(rgb(0xdce0e5))
+                .child(
+                    div()
+                        .text_lg()
+                        .truncate()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    button(
+                        "unlock-switch",
+                        if self.session_key.is_some() {
+                            "Lock archive"
+                        } else {
+                            "Unlock archive"
+                        },
+                    )
+                    .on_click(cx.listener(|s, _, window, cx| {
+                        if s.session_key.take().is_some() {
+                            s.key.update(cx, |i, cx| i.set_value("", window, cx));
+                            s.refresh();
+                            s.notice.clear()
+                        } else {
+                            s.unlock_box = !s.unlock_box
+                        }
+                        cx.notify()
+                    })),
+                ),
+        );
+        if self.unlock_box {
+            pane = pane.child(
+                div()
+                    .p_4()
+                    .gap_2()
+                    .v_flex()
+                    .child(caption(
+                        "Enter your Actions recovery key. It stays in this window.",
+                    ))
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(div().flex_1().child(Input::new(&self.key)))
+                            .child(
+                                button("unlock", "Unlock")
+                                    .primary()
+                                    .on_click(cx.listener(|s, _, w, cx| s.unlock(w, cx))),
+                            ),
+                    ),
+            )
+        }
+        if let Some(t) = thread {
+            let mut feed = div()
+                .id("reading-pane")
+                .v_flex()
+                .min_h_0()
+                .flex_1()
+                .overflow_y_scroll()
+                .p_6()
+                .gap_4();
+            for (i, m) in t.items.iter().rev().enumerate() {
+                let id = m.id.clone();
+                let starred = m.starred;
+                let text = if m.locked {
+                    if m.pgp {
+                        "Encrypted with OpenPGP".into()
+                    } else {
+                        "This message is encrypted.".into()
+                    }
+                } else {
+                    m.text.clone()
+                };
+                let mut actions=div().h_flex().items_center().gap_2().child(caption(m.time.clone()))
+                    .child(Button::new(("star",i)).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
+                        if s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_err(){s.notice="Could not change this star.".into()}s.refresh();cx.notify()
+                    })));
+                if m.pgp {
+                    let text = m.text.clone();
+                    actions = actions.child(
+                        Button::new(("copy", i))
+                            .ghost()
+                            .label("Copy ciphertext")
+                            .on_click(cx.listener(move |s, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                s.notice = "Ciphertext copied.".into();
+                                cx.notify()
+                            })),
+                    )
+                }
+                feed = feed.child(
+                    div().v_flex().items_start().gap_1().child(actions).child(
+                        div()
+                            .max_w(px(520.))
+                            .px_4()
+                            .py_2()
+                            .rounded_xl()
+                            .bg(rgb(0xe9eaee))
+                            .child(text),
+                    ),
+                );
+            }
+            pane = pane.child(feed);
+        } else {
+            pane = pane.child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .p_5()
+                    .child(img(self.logo.clone()).size(px(60.)))
+                    .child(heading(if self.starred {
+                        "No starred messages"
+                    } else {
+                        "Your inbox is ready"
+                    }))
+                    .child(caption(if self.starred {
+                        "Star a message to find it here."
+                    } else {
+                        "Messages appear here when a connected device sends them."
+                    }))
+                    .child(
+                        button("connect", "Connect a phone")
+                            .on_click(cx.listener(|s, _, _, cx| s.open_setup(cx))),
                     ),
             );
         }
-        panel.child(self.notice.clone())
+        pane.child(
+            div().border_t_1().border_color(rgb(0xdce0e5)).p_3().child(
+                div()
+                    .rounded_full()
+                    .bg(rgb(0xf3f4f6))
+                    .px_4()
+                    .py_2()
+                    .text_color(rgb(MUTED))
+                    .child("Reply is a upcoming feature"),
+            ),
+        )
+    }
+}
+impl Render for Dashboard {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let layout = match self.screen {
+            Screen::Setup => self.setup_view(cx),
+            Screen::Inbox => div()
+                .h_flex()
+                .size_full()
+                .child(self.sidebar(cx))
+                .child(self.inbox(cx)),
+            Screen::Settings => div()
+                .h_flex()
+                .size_full()
+                .child(self.sidebar(cx))
+                .child(self.settings_view(cx)),
+        };
+        let mut root = div()
+            .v_flex()
+            .size_full()
+            .bg(rgb(0xffffff))
+            .text_color(rgb(INK))
+            .child(div().flex_1().min_h_0().child(layout));
+        if !self.notice.is_empty() {
+            root = root.child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .bg(rgb(0xe8f0ff))
+                    .text_sm()
+                    .child(self.notice.clone()),
+            )
+        }
+        root
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -244,6 +533,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [],
         |r| r.get(0),
     )?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS desktop_setup(id INTEGER PRIMARY KEY,step INTEGER DEFAULT 0,completed INTEGER DEFAULT 0,baseline INTEGER DEFAULT 0,folder TEXT);INSERT OR IGNORE INTO desktop_setup(id,completed) SELECT 1,EXISTS(SELECT 1 FROM messages)")?;
+    let (step, completed, baseline, folder) = db.query_row(
+        "SELECT step,completed,baseline,folder FROM desktop_setup WHERE id=1",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, u8>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get(2)?,
+                r.get::<_, Option<String>>(3)?.map(PathBuf::from),
+            ))
+        },
+    )?;
+    let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
@@ -269,17 +572,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .placeholder("Actions archive key")
                             .masked(true)
                     });
-                    cx.new(|_| {
+                    let search =
+                        cx.new(|cx| InputState::new(window, cx).placeholder("Search this page"));
+                    let endpoint = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("https://your-host.example/v1/messages")
+                    });
+                    let hook_url =
+                        cx.new(|cx| InputState::new(window, cx).placeholder("Receiver URL"));
+                    let delivery_url = cx.new(|cx| {
+                        InputState::new(window, cx).placeholder("https://example.com/webhook")
+                    });
+                    let hook_token = cx.new(|cx| InputState::new(window, cx).masked(true));
+                    cx.new(|cx: &mut Context<Dashboard>| {
+                        cx.subscribe(
+                            &search,
+                            |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
+                                if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                                    cx.notify()
+                                }
+                            },
+                        )
+                        .detach();
+                        cx.spawn(async move |this, cx| {
+                            loop {
+                                cx.background_executor().timer(Duration::from_secs(4)).await;
+                                if this
+                                    .update(cx, |s, cx| {
+                                        if let Ok(v) =
+                                            s.db.query_row("PRAGMA data_version", [], |r| {
+                                                r.get::<_, i64>(0)
+                                            })
+                                            && s.data_version != v
+                                        {
+                                            s.data_version = v;
+                                            s.refresh();
+                                            cx.notify();
+                                        }
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        })
+                        .detach();
                         let mut s = Dashboard {
                             db,
                             path,
-                            settings,
-                            only_starred,
+                            screen: if settings {
+                                Screen::Settings
+                            } else if completed {
+                                Screen::Inbox
+                            } else {
+                                Screen::Setup
+                            },
+                            starred: only_starred,
                             page: 0,
-                            rows: Vec::new(),
+                            older: false,
+                            threads: Vec::new(),
+                            selected: None,
+                            search,
                             key,
+                            endpoint,
+                            hook_url,
+                            hook_token,
+                            delivery_url,
+                            issued: None,
+                            expiry: Some(30),
+                            session_key: None,
+                            unlock_box: false,
                             notice: String::new(),
-                            revealed: None,
+                            step,
+                            folder,
+                            baseline,
+                            logo: Arc::new(Image::from_bytes(
+                                ImageFormat::Png,
+                                include_bytes!("../../assets/psms-mark.png").to_vec(),
+                            )),
+                            data_version,
                         };
                         s.refresh();
                         s

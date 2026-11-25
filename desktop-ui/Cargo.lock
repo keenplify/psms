@@ -5245,13 +5245,16 @@ dependencies = [
 
 [[package]]
 name = "psms-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
  "gpui-kit",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
+ "url",
+ "uuid",
  "winresource",
 ]
 

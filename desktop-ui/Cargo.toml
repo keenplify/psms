@@ -1,10 +1,13 @@
 [package]
 name = "psms-desktop"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
 aes-gcm = "0.10"
 base64 = "0.23.1"
 gpui-kit = "0.11.0"

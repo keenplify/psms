@@ -1,4 +1,5 @@
 """Package all native CI artifacts, preserving POSIX executable permissions."""
+import json
 import hashlib
 import os
 import shutil
@@ -41,6 +42,17 @@ for target, label in targets.items():
         installers = [f"psms-{label}.deb", f"psms-{label}.rpm"]
     for name in installers:
         shutil.copyfile(folder / name, out / name)
+for browser in ("chrome","firefox"):
+    source = Path("extension")
+    manifest = json.loads((source/"manifest.json").read_text())
+    if browser == "firefox":
+        manifest["background"] = {"scripts":["match.js","background.js"]}
+        manifest["browser_specific_settings"] = {"gecko":{"id":"autofill@papamo.dev","strict_min_version":"128.0"}}
+    with zipfile.ZipFile(out/f"psms-{browser}.zip","w",zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps(manifest,indent=2))
+        for file in sorted(source.iterdir()):
+            if file.name != "manifest.json":
+                z.write(file,file.name)
 for file in sorted(out.iterdir()):
     with file.open("rb") as stream:
         checksums.append(hashlib.file_digest(stream, "sha256").hexdigest() + "  " + file.name)

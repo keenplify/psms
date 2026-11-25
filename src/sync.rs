@@ -123,10 +123,14 @@ pub fn setup(db: &FilePath, cmd: Command) -> Result<(), AnyError> {
             );
         }
         Command::Connect { pairing_file } => {
-            let p: Pairing = read(&pairing_file)?;
+            let p: Pairing = if pairing_file == FilePath::new("-") {
+                serde_json::from_reader(std::io::stdin().lock())?
+            } else {
+                read(&pairing_file)?
+            };
             verified(&p)?;
             write_new(&sidecar(db, ".sync-send"), &p)?;
-            println!("Source paired. Restart pSMS to begin scheduled sync.");
+            println!("Source paired. A running pSMS service picks it up within 15 seconds.");
         }
         Command::Status => {
             println!("Receiving from {} source(s).", load_peers(db)?.len());
@@ -176,6 +180,7 @@ struct Change {
 }
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
+    contact_id: Option<String>,
     sender: String,
     body: String,
     archived_at: i64,
@@ -232,47 +237,61 @@ pub fn configure(a: &Archive, db_path: &FilePath) -> Result<Router<Archive>, Any
     }
     let send = sidecar(db_path, ".sync-send");
     if send.try_exists()? {
-        let p: Pairing = read(&send)?;
-        verified(&p)?;
-        let interval = match std::env::var("PAPAMO_SYNC_INTERVAL_SECONDS") {
-            Ok(v) => v.parse()?,
-            Err(std::env::VarError::NotPresent) => DEFAULT_INTERVAL,
-            Err(e) => return Err(e.into()),
-        };
-        if !(1..=604800).contains(&interval) {
-            return Err("sync interval must be 1 to 604800 seconds".into());
-        }
-        {
-            let mut db = a.db.lock().map_err(|_| "database lock")?;
-            let tx = db.transaction()?;
-            tx.execute_batch(include_str!("sync_source.sql"))?;
-            let prior: Option<String> = tx
-                .query_row("SELECT region FROM sync_schedule WHERE id=1", [], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            match prior {
-                Some(s) if s != p.source => {
-                    return Err("archive already belongs to a different source".into());
+        start_source(a, &send)?;
+    } else {
+        let archive = a.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                if send.is_file() && start_source(&archive, &send).is_ok() {
+                    break;
                 }
-                None => {
-                    tx.execute(
-                        "INSERT INTO sync_schedule VALUES(1,unixepoch(),?1)",
-                        [&p.source],
-                    )?;
-                    tx.execute_batch("INSERT INTO sync_queue(message_id) SELECT id FROM messages WHERE sender IN ('papamo:encrypted:v1','papamo:openpgp:v1');INSERT OR IGNORE INTO sync_queue(message_id) SELECT id FROM deleted_messages;")?;
-                }
-                _ => {}
             }
-            tx.commit()?;
-        }
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        tokio::spawn(worker(a.clone(), p, http, interval));
+        });
     }
     Ok(routes)
+}
+fn start_source(a: &Archive, send: &FilePath) -> Result<(), AnyError> {
+    let p: Pairing = read(send)?;
+    verified(&p)?;
+    let interval = match std::env::var("PAPAMO_SYNC_INTERVAL_SECONDS") {
+        Ok(v) => v.parse()?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_INTERVAL,
+        Err(e) => return Err(e.into()),
+    };
+    if !(1..=604800).contains(&interval) {
+        return Err("sync interval must be 1 to 604800 seconds".into());
+    }
+    {
+        let mut db = a.db.lock().map_err(|_| "database lock")?;
+        let tx = db.transaction()?;
+        tx.execute_batch(include_str!("sync_source.sql"))?;
+        let prior: Option<String> = tx
+            .query_row("SELECT region FROM sync_schedule WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        match prior {
+            Some(s) if s != p.source => {
+                return Err("archive already belongs to a different source".into());
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO sync_schedule VALUES(1,unixepoch(),?1)",
+                    [&p.source],
+                )?;
+                tx.execute_batch("INSERT INTO sync_queue(message_id) SELECT id FROM messages WHERE sender IN ('papamo:encrypted:v1','papamo:openpgp:v1');INSERT OR IGNORE INTO sync_queue(message_id) SELECT id FROM deleted_messages;")?;
+            }
+            _ => {}
+        }
+        tx.commit()?;
+    }
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    tokio::spawn(worker(a.clone(), p, http, interval));
+    Ok(())
 }
 async fn worker(a: Archive, p: Pairing, http: reqwest::Client, interval: u64) {
     loop {
@@ -357,10 +376,12 @@ async fn accept_batch(
     if changes.len() > BATCH
         || changes.iter().any(|change| {
             change.revision < 1
-                || change
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|msg| !encryption::accepts(&msg.sender, &msg.body))
+                || change.snapshot.as_ref().is_some_and(|msg| {
+                    !encryption::accepts(&msg.sender, &msg.body)
+                        || msg.contact_id.as_ref().is_some_and(|id| {
+                            id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit())
+                        })
+                })
         })
     {
         return Err(StatusCode::BAD_REQUEST);
@@ -372,13 +393,21 @@ async fn accept_batch(
         let tx=db.unchecked_transaction()?;
         for change in changes {
             let msg=change.snapshot.as_ref();
-            tx.execute("INSERT INTO replicated_messages(region,id,revision,sender,body,archived_at,starred)
+            let applied=tx.execute("INSERT INTO replicated_messages(region,id,revision,sender,body,archived_at,starred)
                 VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(region,id) DO UPDATE SET
                 revision=excluded.revision,sender=excluded.sender,body=excluded.body,
                 archived_at=excluded.archived_at,starred=excluded.starred
                 WHERE excluded.revision>replicated_messages.revision",
                 params![source,change.id.to_string(),change.revision,msg.map(|m|&m.sender),
                     msg.map(|m|&m.body),msg.map(|m|m.archived_at),msg.is_some_and(|m|m.starred)])?;
+            if applied == 1 {
+                let id = change.id.to_string();
+                tx.execute("DELETE FROM replicated_message_contacts WHERE region=?1 AND message_id=?2", params![source,id])?;
+                if let Some((contact,time))=msg.and_then(|m|m.contact_id.as_ref().map(|c|(c.to_ascii_lowercase(),m.archived_at))) {
+                    tx.execute("INSERT INTO replicated_contacts(region,id,first_seen_at,last_seen_at) VALUES(?3,?1,?2,?2) ON CONFLICT(region,id) DO UPDATE SET first_seen_at=min(first_seen_at,excluded.first_seen_at),last_seen_at=max(last_seen_at,excluded.last_seen_at)",params![contact,time,source])?;
+                    tx.execute("INSERT INTO replicated_message_contacts(region,message_id,contact_id) VALUES(?1,?2,?3)",params![source,id,contact])?;
+                }
+            }
         }
         tx.commit()
     }).await?;
@@ -386,9 +415,9 @@ async fn accept_batch(
 }
 fn read_batch(db: &rusqlite::Connection) -> rusqlite::Result<Vec<Change>> {
     let mut stmt = db.prepare(
-        "SELECT q.seq,q.message_id,m.sender,m.body,m.archived_at,coalesce(f.starred,0)
+        "SELECT q.seq,q.message_id,m.sender,m.body,m.archived_at,coalesce(f.starred,0),c.contact_id
         FROM sync_queue q LEFT JOIN messages m ON m.id=q.message_id
-        LEFT JOIN message_flags f ON f.message_id=q.message_id ORDER BY q.seq LIMIT ?1",
+        LEFT JOIN message_contacts c ON c.message_id=q.message_id LEFT JOIN message_flags f ON f.message_id=q.message_id ORDER BY q.seq LIMIT ?1",
     )?;
     stmt.query_map([BATCH as i64], |row| {
         let id: String = row.get(1)?;
@@ -399,6 +428,7 @@ fn read_batch(db: &rusqlite::Connection) -> rusqlite::Result<Vec<Change>> {
                 if matches!(sender.as_str(), "papamo:encrypted:v1" | "papamo:openpgp:v1") =>
             {
                 Some(Snapshot {
+                    contact_id: row.get(6)?,
                     sender,
                     body: row.get(3)?,
                     archived_at: row.get(4)?,

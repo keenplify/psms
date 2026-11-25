@@ -1,8 +1,12 @@
+#[allow(dead_code)]
+mod app_tokens;
 mod cli;
+mod contacts;
 mod daemon;
 use clap::Parser;
 mod desktop;
 mod encryption;
+mod hook_store;
 mod inbox;
 mod native;
 mod onboard;
@@ -10,6 +14,7 @@ mod sync;
 #[cfg(windows)]
 mod tray;
 mod tunnel;
+mod webhooks;
 
 use axum::{
     Json, Router,
@@ -33,6 +38,7 @@ struct Archive {
     db: Arc<Mutex<Connection>>,
     credential: Arc<str>,
     owner: Option<Arc<str>>,
+    replica_reader: Option<Arc<str>>,
     providers: Arc<Vec<encryption::Provider>>,
 }
 
@@ -41,23 +47,33 @@ struct Message {
     id: Uuid,
     sender: String,
     body: String,
+    contact_id: Option<String>,
 }
 
 impl Archive {
     fn store(&self, message: Message) -> Result<StatusCode, Box<dyn Error + Send + Sync>> {
-        let db = self.db.lock().map_err(|_| "database lock poisoned")?;
+        let mut db = self.db.lock().map_err(|_| "database lock poisoned")?;
         let id = message.id.to_string();
-        let inserted = db.execute(
+        let tx = db.transaction()?;
+        let inserted = tx.execute(
             "INSERT INTO messages (id, sender, body) SELECT ?1, ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM deleted_messages WHERE id=?1) ON CONFLICT(id) DO NOTHING",
             params![id, message.sender, message.body],
         )?;
         if inserted == 1 {
+            if let Some(contact) = &message.contact_id {
+                tx.execute("INSERT INTO contacts(id) VALUES(?1) ON CONFLICT(id) DO UPDATE SET last_seen_at=max(last_seen_at,unixepoch())", [contact])?;
+                tx.execute(
+                    "INSERT INTO message_contacts(message_id,contact_id) VALUES(?1,?2)",
+                    params![id, contact],
+                )?;
+            }
+            tx.commit()?;
             return Ok(StatusCode::CREATED);
         }
-        let same: Option<bool> = db
+        let same: Option<bool> = tx
             .query_row(
-                "SELECT sender = ?2 AND body = ?3 FROM messages WHERE id = ?1",
-                params![id, message.sender, message.body],
+                "SELECT sender = ?2 AND body = ?3 AND (SELECT contact_id FROM message_contacts WHERE message_id=?1) IS ?4 FROM messages WHERE id = ?1",
+                params![id, message.sender, message.body, message.contact_id],
                 |row| row.get(0),
             )
             .optional()?;
@@ -72,7 +88,7 @@ impl Archive {
 async fn receive(
     State(archive): State<Archive>,
     headers: HeaderMap,
-    Json(message): Json<Message>,
+    Json(mut message): Json<Message>,
 ) -> StatusCode {
     let provided = headers
         .get("authorization")
@@ -83,6 +99,12 @@ async fn receive(
     }
     if !encryption::accepts(&message.sender, &message.body) {
         return StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    if let Some(id) = &mut message.contact_id {
+        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return StatusCode::UNPROCESSABLE_ENTITY;
+        }
+        id.make_ascii_lowercase();
     }
     match tokio::task::spawn_blocking(move || archive.store(message)).await {
         Ok(Ok(status)) => status,
@@ -119,6 +141,25 @@ fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>>
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut cli = cli::Cli::parse();
+    if let Some(cli::Command::ContactId { key_file }) = &cli.command {
+        use sha2::{Digest, Sha256};
+        let key = std::fs::read_to_string(key_file)?;
+        let key = key.trim_end_matches(['\r', '\n']);
+        if key.len() != 32 || !key.is_ascii() {
+            return Err("expected a 32-character shortcut recovery key".into());
+        }
+        let mut sender = String::new();
+        std::io::stdin().read_line(&mut sender)?;
+        let sender = sender.trim_end_matches(['\r', '\n']);
+        if sender.is_empty() {
+            return Err("enter the exact sender ID or phone number".into());
+        }
+        println!(
+            "{:x}",
+            Sha256::digest(format!("psms-contact-v1\n{sender}\n{key}"))
+        );
+        return Ok(());
+    }
     let db_path = database_path(cli.options.database.take())?;
     if let Some(cli::Command::Sync { command }) = cli.command {
         return sync::setup(&db_path, command);
@@ -131,6 +172,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .or_else(|| daemon::running_address(&db_path).ok().flatten())
             .unwrap_or(preferred);
         return tunnel::run(provider, bind);
+    }
+    #[cfg(windows)]
+    if cli.command.is_none()
+        && std::env::current_exe()?
+            .with_file_name("psms-desktop.exe")
+            .is_file()
+    {
+        cli.command = Some(cli::Command::Desktop);
     }
     let worker = match cli.command {
         Some(cli::Command::Onboard { endpoint, output }) => {
@@ -198,6 +247,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     db.execute_batch(
         "PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS contacts (
+            id TEXT PRIMARY KEY NOT NULL, first_seen_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            last_seen_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE IF NOT EXISTS message_contacts (
+            message_id TEXT PRIMARY KEY NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            contact_id TEXT NOT NULL REFERENCES contacts(id)
+        );
+        CREATE INDEX IF NOT EXISTS message_contacts_by_contact ON message_contacts(contact_id);
         CREATE TABLE IF NOT EXISTS deleted_messages(id TEXT PRIMARY KEY NOT NULL);
         CREATE TRIGGER IF NOT EXISTS remember_deleted_message AFTER DELETE ON messages
         BEGIN INSERT OR IGNORE INTO deleted_messages(id) VALUES(OLD.id); END;
@@ -206,6 +264,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             starred INTEGER NOT NULL
         )",
     )?;
+    db.execute_batch(app_tokens::SCHEMA)?;
+    db.execute_batch(include_str!("webhooks.sql"))?;
     let configured_owner = env::var_os("PAPAMO_OWNER_TOKEN")
         .map(|s| s.into_string().map_err(|_| "invalid owner token"))
         .transpose()?;
@@ -224,14 +284,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err("PAPAMO_OWNER_TOKEN must be separate from PAPAMO_TOKEN and contain at least 32 visible ASCII characters".into());
     }
+    let replica_reader = env::var("PAPAMO_REPLICA_READ_TOKEN").ok();
+    if let Some(reader) = &replica_reader
+        && (reader.len() < 32
+            || !reader.bytes().all(|b| b.is_ascii_graphic())
+            || reader == &token
+            || Some(reader) == owner.as_ref())
+    {
+        return Err("configure a separate replica operator credential of at least 32 visible ASCII characters".into());
+    }
     let archive = Archive {
+        replica_reader: replica_reader.map(|s| format!("Bearer {s}").into()),
         db: Arc::new(Mutex::new(db)),
         credential: format!("Bearer {token}").into(),
         owner: owner.map(|value| format!("Bearer {value}").into()),
         providers: Arc::new(encryption::providers()?),
     };
+    webhooks::start(archive.clone())?;
     let sync_routes = sync::configure(&archive, &db_path)?;
     let app = Router::new()
+        .route(
+            "/.well-known/psms",
+            get(|| async { Json(serde_json::json!({"service":"psms","version":1})) }),
+        )
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .merge(inbox::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))
