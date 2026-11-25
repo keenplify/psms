@@ -16,8 +16,8 @@
     if(!host || !field) return;
     const r=field.getBoundingClientRect();
     if(!r.width || !r.height || r.bottom<0 || r.top>innerHeight){clear();return}
-    host.style.left=Math.max(4,Math.min(r.left,innerWidth-178))+"px";
-    host.style.top=(r.bottom+54<=innerHeight?r.bottom+5:Math.max(4,r.top-51))+"px";
+    host.style.setProperty("left",Math.max(4,Math.min(r.left,innerWidth-178))+"px","important");
+    host.style.setProperty("top",(r.bottom+54<=innerHeight?r.bottom+5:Math.max(4,r.top-51))+"px","important");
   }
   function display(el,data){
     host?.remove(); clearTimeout(expiresTimer);

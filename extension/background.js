@@ -3,7 +3,7 @@ const api = globalThis.browser ?? chrome;
 async function suggest(sender) {
   if (sender.frameId !== 0 || !sender.tab?.active || !sender.url) return null;
   const site = new URL(sender.url);
-  if (site.protocol !== "https:" || !await api.permissions.contains({origins:[site.origin+"/*"]})) return null;
+  if (site.protocol !== "https:" || !await api.permissions.contains({origins:[site.protocol+"//"+site.hostname+"/*"]})) return null;
   const {sites=[],server} = await api.storage.local.get(["sites","server"]);
   if (!sites.includes(site.origin) || !server) return null;
   const {pair} = await api.storage.session.get("pair");

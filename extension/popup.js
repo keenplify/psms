@@ -23,7 +23,7 @@ el("connect").onclick=async()=>{
     if(u.username||u.password||u.search||u.hash||!(u.protocol==="https:" || (u.protocol==="http:" && u.hostname==="127.0.0.1")))throw Error();
     const key=el("key").value,token=el("token").value.trim();
     if(key.length!==32 || !/^[a-f\d]{64}$/i.test(token)){status("Enter your 32-character recovery key and Browser autofill token.");return}
-    if(!await api.permissions.request({origins:[u.origin+"/*"]}))return;
+    if(!await api.permissions.request({origins:[u.protocol+"//"+u.hostname+"/*"]}))return;
     const server=u.href.replace(/\/+$/,"");
     const r=await fetch(server+"/otp/recent",{headers:{Authorization:"Bearer "+token},redirect:"error",credentials:"omit",cache:"no-store",signal:AbortSignal.timeout(5000)});
     if(!r.ok){status("Connection denied. Check the server and the Browser autofill token.");return}
@@ -35,7 +35,7 @@ el("lock").onclick=async()=>{await api.storage.session.remove("pair");status("Lo
 el("enable").onclick=async()=>{
   try{
     const tab=currentTab;
-    const origin=new URL(tab.url).origin;
+    const site=new URL(tab.url), origin=site.origin, pattern=site.protocol+"//"+site.hostname+"/*";
     if(!origin.startsWith("https://")){status("Open an HTTPS sign-in page first.");return}
     const sites=enabledSites;
     const id="psms-"+Array.from(new TextEncoder().encode(origin),x=>x.toString(16).padStart(2,"0")).join("");
@@ -43,11 +43,14 @@ el("enable").onclick=async()=>{
       enabledSites=sites.filter(s=>s!==origin);await api.storage.local.set({sites:enabledSites});
       await api.scripting.unregisterContentScripts({ids:[id]});el("enable").textContent="Enable on this site";status("Disabled on this site.");return
     }
-    if(!await api.permissions.request({origins:[origin+"/*"]}))return;
-    await api.scripting.registerContentScripts([{id,matches:[origin+"/*"],js:["field.js"],allFrames:false}]);
+    if(!await api.permissions.request({origins:[pattern]}))return;
+    await api.scripting.registerContentScripts([{id,matches:[pattern],js:["field.js"],allFrames:false}]);
     enabledSites=[...sites,origin];await api.storage.local.set({sites:enabledSites});
     await api.scripting.executeScript({target:{tabId:tab.id},files:["field.js"]});
     el("enable").textContent="Disable on this site";status("Enabled. Focus a verification code field.");
   }catch{status("Could not enable autofill here. Open a normal HTTPS tab and try again.")}
 };
-detect().catch(()=>status("Open Settings in pSMS to connect."));
+el("server").disabled=el("connect").disabled=el("enable").disabled=true;
+detect().catch(()=>status("Open Settings in pSMS to connect.")).finally(()=>{
+  el("server").disabled=el("connect").disabled=el("enable").disabled=false;
+});
