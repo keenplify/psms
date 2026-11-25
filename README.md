@@ -42,7 +42,7 @@ The old SQLite file is retained. Check an existing message and a new encrypted u
 
 ## Phone setup
 
-The default archive is `~/Library/Application Support/papamo-sms/papamo.sqlite3` on macOS, `%LOCALAPPDATA%\papamo-sms\papamo.sqlite3` on Windows, and `$XDG_DATA_HOME/papamo-sms/papamo.sqlite3` on Linux (normally `~/.local/share/papamo-sms/papamo.sqlite3`). If upgrading from the working-directory default, set PSMS_DB_PATH to the absolute path of your existing archive.
+The default archive is `%LOCALAPPDATA%\papamo-sms\papamo.sqlite3` on Windows and `$XDG_DATA_HOME/papamo-sms/papamo.sqlite3` on Linux (normally `~/.local/share/papamo-sms/papamo.sqlite3`). If upgrading from the working-directory default, set PSMS_DB_PATH to the absolute path of your existing archive.
 
 Run `psms desktop` for the native inbox. Owner and upload tokens are generated in the private archive by default. When providing an explicit PSMS_TOKEN, set a distinct PSMS_OWNER_TOKEN for owner HTTP access, or omit it for upload-only HTTP. Protect the database and backups at the OS level.
 
@@ -99,7 +99,7 @@ lefthook install
 
 Before each commit, the hook checks Rust formatting and runs Clippy across all Cargo targets with warnings treated as errors. Run `cargo fmt --all` to apply formatting, or `lefthook run pre-commit` to run both checks manually.
 
-Run `cargo build --locked --release` on the target system. CI builds and tests Linux x86-64 and ARM64 (GNU), Windows x86-64 (MSVC), and Intel macOS. Each job uploads its native executable. Linux binaries inherit the build runner's system library requirements.
+Run `cargo build --locked --release` on the target system. CI builds and tests Linux x86-64 and ARM64 (GNU) and Windows x86-64 (MSVC). Each job uploads its native executable. Linux binaries inherit the build runner's system library requirements.
 
 ## License
 

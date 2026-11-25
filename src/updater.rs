@@ -58,7 +58,6 @@ fn platform() -> Result<&'static str> {
         ("windows", "x86_64") => Ok("windows-x64"),
         ("linux", "x86_64") => Ok("linux-x64"),
         ("linux", "aarch64") => Ok("linux-arm64"),
-        ("macos", "x86_64") => Ok("macos-intel"),
         _ => Err("No update package for this platform".into()),
     }
 }

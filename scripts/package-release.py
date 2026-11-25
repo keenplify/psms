@@ -16,7 +16,7 @@ if os.environ["GITHUB_REF_NAME"] != "v" + version:
 out = Path("dist")
 out.mkdir(exist_ok=True)
 targets = {"x86_64-pc-windows-msvc": "windows-x64", "x86_64-unknown-linux-gnu": "linux-x64",
-           "aarch64-unknown-linux-gnu": "linux-arm64", "x86_64-apple-darwin": "macos-intel"}
+           "aarch64-unknown-linux-gnu": "linux-arm64"}
 checksums = []
 for target, label in targets.items():
     windows = label.startswith("windows")
