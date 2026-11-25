@@ -68,6 +68,36 @@ pub fn routes(prefix: &str) -> Router<Archive> {
         .route(&format!("{prefix}/webhooks/{{id}}/rotate"), post(rotate))
         .route(&format!("{prefix}/webhooks/{{id}}"), delete(remove))
 }
+async fn queue_external(a: &Archive, target: &crate::storage::Target) -> Result<()> {
+    let after = a
+        .query(|db| {
+            db.query_row(
+                "SELECT revision FROM external_hook_cursor WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .await?;
+    let events = target
+        .events(after)
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    if events.is_empty() {
+        return Ok(());
+    }
+    a.query(move |db| {
+        let tx = db.unchecked_transaction()?;
+        for row in events {
+            let revision = row["revision"].as_i64().ok_or(rusqlite::Error::InvalidQuery)?;
+            let id = row["message_id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
+            let kind = row["event_type"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
+            if tx.execute("UPDATE external_hook_cursor SET revision=?1 WHERE id=1 AND revision<?1", [revision])? == 1 {
+                tx.execute("INSERT INTO webhook_deliveries(endpoint,message_id,event) SELECT id,?1,?2 FROM webhook_endpoints", [id,kind])?;
+            }
+        }
+        tx.commit()
+    }).await
+}
 pub fn start(a: Archive) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -76,6 +106,11 @@ pub fn start(a: Archive) -> std::result::Result<(), Box<dyn std::error::Error>> 
         .build()?;
     tokio::spawn(async move {
         loop {
+            if let Some(target) = &a.remote
+                && queue_external(&a, target).await.is_err()
+            {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
             let pending=a.query(|db|db.query_row("SELECT d.id,d.message_id,d.event,e.url,e.bearer FROM webhook_deliveries d JOIN webhook_endpoints e ON e.id=d.endpoint WHERE d.due<=unixepoch() ORDER BY d.due,d.id LIMIT 1",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?))).optional()).await;
             let Ok(Some((id, message, event, url, token))) = pending else {
                 tokio::time::sleep(Duration::from_secs(5)).await;

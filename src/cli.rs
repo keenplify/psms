@@ -17,6 +17,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Inspect or migrate authoritative archive storage.
+    Storage {
+        #[command(subcommand)]
+        command: crate::storage::Command,
+    },
     /// Serve read-only Model Context Protocol tools over stdin/stdout.
     Mcp {
         /// Archive API base URL. Defaults to the running local archive.

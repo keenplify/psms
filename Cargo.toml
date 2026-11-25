@@ -27,6 +27,11 @@ subtle = "2.6.1"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "time"] }
 uuid = { version = "1.29.3", features = ["serde", "v4"] }
+rbdc = "4.9.11"
+rbdc-pg = "4.9.13"
+rbdc-mysql = "4.9.12"
+rbdc-mssql = "4.9.9"
+rbs = "4"
 
 [target."cfg(windows)".dependencies]
 tray-icon = { version = "0.27.0", default-features = false }

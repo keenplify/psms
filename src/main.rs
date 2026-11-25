@@ -25,6 +25,7 @@ mod inbox;
 mod mcp;
 mod native;
 mod onboard;
+mod storage;
 mod sync;
 #[cfg(windows)]
 mod tray;
@@ -50,6 +51,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 struct Archive {
+    remote: Option<Arc<storage::Target>>,
     db: Arc<Mutex<Connection>>,
     credential: Arc<str>,
     owner: Option<Arc<str>>,
@@ -121,6 +123,14 @@ async fn receive(
         }
         id.make_ascii_lowercase();
     }
+    if let Some(remote) = &archive.remote {
+        return remote
+            .insert(&message)
+            .await
+            .ok()
+            .and_then(|s| StatusCode::from_u16(s).ok())
+            .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    }
     match tokio::task::spawn_blocking(move || archive.store(message)).await {
         Ok(Ok(status)) => status,
         _ => {
@@ -176,6 +186,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let db_path = database_path(cli.options.database.take())?;
+    if let Some(cli::Command::Storage { command }) = cli.command {
+        return storage::run(&db_path, command)
+            .await
+            .map_err(|e| e as Box<dyn Error>);
+    }
     if let Some(cli::Command::Mcp {
         server,
         token_file,
@@ -216,7 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let token = match env::var(crate::env_name!("TOKEN")) {
                 Ok(v) => v,
                 Err(_) => Connection::open_with_flags(
-                    &db_path,
+                    storage::local_state(&db_path),
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 )?
                 .query_row(
@@ -231,8 +246,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(cli::Command::Status) => return daemon::status(&db_path),
         Some(cli::Command::Stop) => return daemon::stop(&db_path),
         Some(cli::Command::Token { role }) => {
-            let conn =
-                Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let conn = Connection::open_with_flags(
+                storage::local_state(&db_path),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
             let sql = match role {
                 cli::Role::Upload => "SELECT upload FROM local_credentials WHERE singleton=1",
                 cli::Role::Owner => "SELECT owner FROM local_credentials WHERE singleton=1",
@@ -268,7 +285,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }) {
         return Err("PSMS_API_PREFIX requires an absolute path such as /v1".into());
     }
-    let mut db = Connection::open(&db_path)?;
+    let _storage_lock = storage::lock(&db_path).map_err(|e| e as Box<dyn Error>)?;
+    let remote = storage::runtime(&db_path)
+        .await
+        .map_err(|e| e as Box<dyn Error>)?;
+    let mut db = Connection::open(storage::local_state(&db_path))?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL,
@@ -295,6 +316,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )",
     )?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;
+    if remote.is_some() {
+        db.execute_batch("CREATE TABLE IF NOT EXISTS external_hook_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_hook_cursor VALUES(1,0);")?;
+    }
     db.execute_batch(app_tokens::SCHEMA)?;
     db.execute_batch(include_str!("webhooks.sql"))?;
     let configured_owner = env::var_os(crate::env_name!("OWNER_TOKEN"))
@@ -325,6 +349,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("configure a separate replica operator credential of at least 32 visible ASCII characters".into());
     }
     let archive = Archive {
+        remote: remote.map(Arc::new),
         replica_reader: replica_reader.map(|s| format!("Bearer {s}").into()),
         db: Arc::new(Mutex::new(db)),
         credential: format!("Bearer {token}").into(),
@@ -337,6 +362,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route(
             "/.well-known/psms",
             get(|| async { Json(serde_json::json!({"service":"psms","version":1})) }),
+        )
+        .route(
+            "/readyz",
+            get(|State(a): State<Archive>| async move {
+                if let Some(r) = a.remote
+                    && r.revision().await.is_err()
+                {
+                    return StatusCode::SERVICE_UNAVAILABLE;
+                }
+                StatusCode::NO_CONTENT
+            }),
         )
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .merge(inbox::routes(&prefix, archive.clone()))

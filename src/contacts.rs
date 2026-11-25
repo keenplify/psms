@@ -20,7 +20,7 @@ struct Filters {
     include: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Contact {
     id: String,
     first_seen_at: i64,
@@ -28,12 +28,12 @@ struct Contact {
     #[serde(skip_serializing_if = "Option::is_none")]
     messages: Option<MessagePage>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ContactPage {
     contacts: Vec<Contact>,
     next_cursor: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct MessagePage {
     messages: Vec<Entry>,
     next_cursor: Option<String>,
@@ -97,6 +97,13 @@ async fn list(
         .transpose()?
         .unwrap_or_default();
     let filter = q.contact_id.as_deref().map(digest).transpose()?;
+    if let Some(remote) = &archive.remote {
+        return crate::inbox::remote_result(
+            remote
+                .contacts(filter.as_deref(), &cursor, n, include)
+                .await,
+        );
+    }
     archive.query(move|db|{
         let sql=if filter.is_some(){"SELECT id,first_seen_at,last_seen_at FROM contacts WHERE id>?1 AND id=?3 ORDER BY id LIMIT ?2"}else{"SELECT id,first_seen_at,last_seen_at FROM contacts WHERE id>?1 ORDER BY id LIMIT ?2"};
         let mut stmt=db.prepare_cached(sql)?;
@@ -119,6 +126,16 @@ async fn detail(
 ) -> Result<Json<Contact>> {
     let id = digest(&id)?;
     let include = expand(q.include.as_deref())?;
+    if let Some(remote) = &a.remote {
+        let mut page = remote
+            .contacts(Some(&id), "", 1, include)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        return crate::inbox::remote_result(Ok(page["contacts"]
+            .as_array_mut()
+            .and_then(Vec::pop)
+            .ok_or(StatusCode::NOT_FOUND)?));
+    }
     a.query(move |db| {
         let mut c = db
             .query_row(
@@ -149,6 +166,13 @@ async fn history(
 ) -> Result<Json<MessagePage>> {
     let id = digest(&id)?;
     let n = limit(q.limit)?;
+    if let Some(remote) = &a.remote {
+        return crate::inbox::remote_result(Ok(remote
+            .history(&id, &q.cursor.map(|u| u.to_string()).unwrap_or_default(), n)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .ok_or(StatusCode::NOT_FOUND)?));
+    }
     a.query(move |db| {
         if !db.query_row(
             "SELECT EXISTS(SELECT 1 FROM contacts WHERE id=?1)",

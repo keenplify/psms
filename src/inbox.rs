@@ -92,7 +92,7 @@ pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
         )
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Entry {
     id: String,
     sender: String,
@@ -116,7 +116,7 @@ struct Page {
     cursor: Option<i64>,
     limit: Option<usize>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Listing {
     messages: Vec<Entry>,
     next_cursor: Option<i64>,
@@ -130,6 +130,13 @@ async fn list(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    if let Some(remote) = &archive.remote {
+        return remote_result(
+            remote
+                .messages(page.cursor.unwrap_or(i64::MAX), limit)
+                .await,
+        );
+    }
     archive
         .query(move |db| {
             let mut stmt = db.prepare(&format!(
@@ -158,6 +165,14 @@ async fn list(
         .map(Json)
 }
 async fn detail(State(archive): State<Archive>, Path(id): Path<Uuid>) -> ApiResult<Json<Entry>> {
+    if let Some(remote) = &archive.remote {
+        return remote_result(Ok(remote
+            .message(&id.to_string())
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .ok_or(StatusCode::NOT_FOUND)?));
+    }
+
     archive
         .query(move |db| {
             db.query_row(&format!("{SELECT} WHERE m.id=?1"), [id.to_string()], entry)
@@ -177,10 +192,26 @@ async fn update(
     Path(id): Path<Uuid>,
     Json(edit): Json<Edit>,
 ) -> ApiResult<StatusCode> {
+    if let Some(remote) = &archive.remote {
+        return found(usize::from(
+            remote
+                .edit(&id.to_string(), Some(edit.starred))
+                .await
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
+        ));
+    }
     let changed=archive.query(move |db| db.execute("INSERT INTO message_flags(message_id,starred) SELECT id,?2 FROM messages WHERE id=?1 ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",params![id.to_string(),edit.starred])).await?;
     found(changed)
 }
 async fn remove(State(archive): State<Archive>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    if let Some(remote) = &archive.remote {
+        return found(usize::from(
+            remote
+                .edit(&id.to_string(), None)
+                .await
+                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
+        ));
+    }
     found(
         archive
             .query(move |db| db.execute("DELETE FROM messages WHERE id=?1", [id.to_string()]))
@@ -233,6 +264,21 @@ async fn recent_for_browser(
     if !a.app_token(&headers, "browser") {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let rows=a.query(|db|db.prepare("SELECT body,archived_at FROM messages WHERE sender='papamo:encrypted:v1' AND archived_at BETWEEN unixepoch()-300 AND unixepoch() ORDER BY rowid DESC LIMIT 25")?.query_map([],|r|Ok(serde_json::json!({"body":r.get::<_,String>(0)?,"archived_at":r.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()).await?;
+    let rows = if let Some(remote) = &a.remote {
+        remote
+            .recent()
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+    } else {
+        a.query(|db|db.prepare("SELECT body,archived_at FROM messages WHERE sender='papamo:encrypted:v1' AND archived_at BETWEEN unixepoch()-300 AND unixepoch() ORDER BY rowid DESC LIMIT 25")?.query_map([],|r|Ok(serde_json::json!({"body":r.get::<_,String>(0)?,"archived_at":r.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()).await?
+    };
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(rows)))
+}
+
+pub(crate) fn remote_result<T: serde::de::DeserializeOwned>(
+    result: crate::storage::Result<serde_json::Value>,
+) -> ApiResult<Json<T>> {
+    serde_json::from_value(result.map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?)
+        .map(Json)
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
 }

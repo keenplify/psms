@@ -196,14 +196,15 @@ pub async fn run(
     }
     let bearer = match file {
         Some(f) => std::fs::read_to_string(f)?.trim().to_owned(),
-        None if server.is_none() => {
-            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
-                .query_row(
-                "SELECT owner FROM local_credentials WHERE singleton=1",
-                [],
-                |r| r.get(0),
-            )?
-        }
+        None if server.is_none() => rusqlite::Connection::open_with_flags(
+            crate::storage::local_state(db),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?
+        .query_row(
+            "SELECT owner FROM local_credentials WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?,
         None => return Err("explicit servers require --token-file".into()),
     };
     let key = key_file

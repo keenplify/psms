@@ -1,0 +1,47 @@
+name: Database integration
+on:
+  push:
+    branches: [codex/sql-archives]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  database:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [postgres, mysql, mariadb, sqlserver]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Start disposable database
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          pw="Test$(openssl rand -hex 16)!"
+          case "${{ matrix.engine }}" in
+            postgres)
+              docker run -d -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD="$pw" postgres:16
+              echo "postgres://postgres:$pw@127.0.0.1:5432/postgres" > "$RUNNER_TEMP/db-url" ;;
+            mysql|mariadb)
+              image=mysql:8.4
+              if [[ "${{ matrix.engine }}" == mariadb ]]; then image=mariadb:11; fi
+              docker run -d -p 127.0.0.1:3306:3306 -e MYSQL_DATABASE=inbox -e MYSQL_USER=archive -e MYSQL_PASSWORD="$pw" -e MYSQL_ROOT_PASSWORD="$pw" "$image"
+              echo "mysql://archive:$pw@127.0.0.1:3306/inbox" > "$RUNNER_TEMP/db-url" ;;
+            sqlserver)
+              docker run -d -p 127.0.0.1:1433:1433 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$pw" mcr.microsoft.com/mssql/server:2022-latest
+              echo "Server=tcp:127.0.0.1,1433;Database=master;User ID=sa;Password=$pw;TrustServerCertificate=true;Encrypt=true" > "$RUNNER_TEMP/db-url" ;;
+          esac
+      - run: cargo build --locked --bin psms
+      - name: Verify storage and switch
+        shell: bash
+        run: |
+          set -eu
+          app=target/debug/psms
+          for n in {1..12}; do
+            if "$app" storage check ${{ matrix.engine }} --connection-file "$RUNNER_TEMP/db-url"; then break; fi
+            sleep 5
+          done
+          "$app" --database "$RUNNER_TEMP/inbox.sqlite3" storage switch ${{ matrix.engine }} --connection-file "$RUNNER_TEMP/db-url"
