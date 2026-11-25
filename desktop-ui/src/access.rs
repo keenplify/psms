@@ -38,7 +38,7 @@ impl Dashboard {
         let mut view = div()
             .v_flex()
             .gap_3()
-            .max_w(px(570.))
+            .min_w_0()
             .mb_5()
             .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.heading("Access tokens"));
         let mut choices = div().h_flex().gap_2().child(self.caption("Expiration"));

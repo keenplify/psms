@@ -11,6 +11,7 @@ pub struct Form {
     pub credential: Entity<InputState>,
     pub provider: &'static str,
     pub custom: bool,
+    manual_open: bool,
     pub busy: bool,
     pub generation: u64,
     pub hint: String,
@@ -91,6 +92,7 @@ impl Form {
             suffix,
             provider,
             custom,
+            manual_open: false,
             busy: false,
             generation: 0,
             hint: String::new(),
@@ -143,6 +145,46 @@ impl Dashboard {
         .detach();
     }
     pub fn connection_view(&self, cx: &mut Context<Self>) -> Div {
+        let hosted = div()
+            .v_flex()
+            .gap_3()
+            .p_5()
+            .rounded_lg()
+            .border_1()
+            .border_color(self.color(0xd9dfe7))
+            .bg(self.color(0xf0f3f8))
+            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Use your Papamo account"))
+            .child("Store up to 1,000 encrypted messages for free. Papamo runs the database and provides the HTTPS address for your phone.")
+            .child(div().child(button("papamo-login", "Sign in with Papamo")
+                .icon(IconName::Globe)
+                .primary()
+                .on_click(|_, _, cx| cx.open_url("https://www.papamo.dev/login"))))
+            .child(self.caption("Opens in your browser. Your 1.6 Competitive login works here too."));
+        let mut choices = div().v_flex().gap_3().child(hosted).child(
+            div().child(
+                button(
+                    "manual-connection",
+                    if self.form.manual_open {
+                        "Hide manual setup"
+                    } else {
+                        "Set up manually with a tunnel or domain"
+                    },
+                )
+                .icon(IconName::Network)
+                .disabled(self.form.busy)
+                .on_click(cx.listener(|s, _, _, cx| {
+                    s.form.manual_open = !s.form.manual_open;
+                    cx.notify();
+                })),
+            ),
+        );
+        if self.form.manual_open {
+            choices = choices.child(self.manual_connection_view(cx));
+        }
+        choices
+    }
+
+    fn manual_connection_view(&self, cx: &mut Context<Self>) -> Div {
         let selector = div().h_flex().flex_shrink_0().gap_2().children(
             [("ngrok", "ngrok"), ("cloudflare", "Cloudflare")]
                 .into_iter()

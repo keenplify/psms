@@ -238,32 +238,14 @@ impl Dashboard {
         };
         cx.notify()
     }
-    pub fn settings_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub fn settings_view(&self, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let mut card = div()
             .v_flex()
             .gap_3()
-            .max_w(px(570.))
-            .child(self.heading("Settings"))
+            .min_w_0()
+            .child(self.heading("Archive"))
             .child(self.caption(self.path.display().to_string()))
             .child(self.storage_view(cx))
-            .child(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .child(
-                        button("return", "Open inbox")
-                            .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Inbox, cx))),
-                    )
-                    .child(
-                        button("setup", "Phone setup")
-                            .on_click(cx.listener(|s, _, _, cx| s.open_setup(cx))),
-                    )
-                    .child(
-                        button("help", "Guide")
-                            .ghost()
-                            .on_click(|_, _, cx| cx.open_url(GUIDE)),
-                    ),
-            )
             .child(
                 div()
                     .mt_4()
@@ -324,7 +306,7 @@ impl Dashboard {
                 r.get::<_, u32>(0)
             })
             .ok();
-        let mut timing = div().h_flex().gap_2();
+        let mut timing = div().h_flex().flex_wrap().gap_2();
         for (i, (label, seconds)) in [
             ("Default", None),
             ("1 hour", Some(3600)),
@@ -358,14 +340,52 @@ impl Dashboard {
                         }),
                 ),
             );
+        let columns = if wide {
+            div()
+                .h_flex()
+                .items_start()
+                .gap_8()
+                .child(div().flex_1().min_w_0().child(access))
+                .child(div().flex_1().min_w_0().child(card))
+        } else {
+            div().v_flex().gap_5().child(access).child(card)
+        };
         div()
+            .v_flex()
             .flex_1()
             .min_w_0()
             .h_full()
-            .id("settings-pane")
-            .overflow_y_scroll()
-            .p_6()
-            .child(access)
-            .child(card)
+            .child(
+                div()
+                    .h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_3()
+                    .px_6()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(self.color(0xd3d8df))
+                    .child(div().flex_1().child(self.heading("Settings")))
+                    .child(button("setup", "Run setup again").on_click(cx.listener(
+                        |s, _, _, cx| {
+                            s.step = 0;
+                            s.show(Screen::Setup, cx);
+                        },
+                    )))
+                    .child(
+                        button("help", "Guide")
+                            .ghost()
+                            .on_click(|_, _, cx| cx.open_url(GUIDE)),
+                    ),
+            )
+            .child(
+                div()
+                    .id("settings-pane")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_6()
+                    .child(columns),
+            )
     }
 }

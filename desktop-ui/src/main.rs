@@ -354,11 +354,14 @@ impl Dashboard {
                     .border_t_1()
                     .border_color(self.color(0xd3d8df))
                     .p_3()
-                    .child(
+                    .child(if self.screen == Screen::Settings {
+                        button("return", "Back to inbox")
+                            .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Inbox, cx)))
+                    } else {
                         button("config", "Settings")
                             .ghost()
-                            .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Settings, cx))),
-                    ),
+                            .on_click(cx.listener(|s, _, _, cx| s.show(Screen::Settings, cx)))
+                    }),
             )
     }
     fn unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -558,7 +561,7 @@ impl Dashboard {
     }
 }
 impl Render for Dashboard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout = match self.screen {
             Screen::Setup => self.setup_view(cx),
             Screen::Inbox => div()
@@ -570,7 +573,7 @@ impl Render for Dashboard {
                 .h_flex()
                 .size_full()
                 .child(self.sidebar(cx))
-                .child(self.settings_view(cx)),
+                .child(self.settings_view(window.viewport_size().width >= px(1280.), cx)),
         };
         let mut root = div()
             .v_flex()
