@@ -41,6 +41,33 @@ class ArchiveTest(unittest.TestCase):
             error.close()
             return error.code, None
 
+    def test_cli_settings_and_domain_proof(self):
+        self.cli("init")
+        self.addCleanup(self.cli,"stop")
+        owner=self.cli("manage","access","create","api","--days","7")
+        self.assertEqual(len(owner),64)
+        self.assertNotEqual(self.cli("manage","access","rotate","api"),owner)
+        self.cli("manage","access","revoke","api")
+        self.assertEqual(self.cli("manage","access","status","api"),"No token")
+        self.cli("manage","theme","dark")
+        self.cli("manage","sync-interval","3600")
+        hook=json.loads(self.cli("manage","webhook","add","https://example.org/psms-test"))
+        self.assertNotIn(hook["token"],self.cli("manage","webhook","list"))
+        self.cli("manage","webhook","remove",hook["id"])
+        self.assertFalse(json.loads(self.cli("manage","inbox","list"))["messages"])
+        with sqlite3.connect(self.db) as db:
+            secret,prefix=db.execute("SELECT secret,prefix FROM tunnel_runtime").fetchone()
+            self.assertEqual(prefix,"/test/v1")
+            self.assertEqual(db.execute("SELECT seconds FROM sync_interval").fetchone()[0],3600)
+        db.close()
+        nonce=str(uuid.uuid4())
+        origin="http://"+Path(str(self.db)+".ready").read_text().strip()
+        with urlopen(origin+"/.well-known/psms/verify/"+nonce,timeout=5) as res:
+            self.assertEqual(res.read().decode(),hashlib.sha256(f"psms-domain-v1/{secret}/{nonce}".encode()).hexdigest())
+        result=subprocess.run([binary,"onboard","--domain","localhost","--output",str(self.root/"pair")],env=self.env,capture_output=True,timeout=8)
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse((self.root/"pair").exists())
+
     def test_service(self):
         upload, owner = secrets.token_hex(32),secrets.token_hex(32)
         self.env.update(PSMS_TOKEN=upload,PSMS_OWNER_TOKEN=owner)

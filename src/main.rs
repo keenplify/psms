@@ -14,6 +14,7 @@ macro_rules! env_name {
 #[allow(dead_code)]
 mod app_tokens;
 mod cli;
+mod cloudflare;
 mod contacts;
 mod daemon;
 use clap::Parser;
@@ -21,16 +22,21 @@ mod decrypt;
 mod desktop;
 mod encryption;
 mod hook_store;
+mod hostname_label;
 mod inbox;
+mod manage;
+mod managed_tunnel;
 mod mcp;
 mod native;
 mod onboard;
+mod public_host;
 mod storage;
 mod sync;
 #[cfg(windows)]
 mod tray;
 mod tunnel;
 mod webhooks;
+mod wizard;
 
 use axum::{
     Json, Router,
@@ -215,6 +221,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let preferred = "127.0.0.1:47832".parse()?;
     if let Some(cli::Command::Tunnel { provider }) = cli.command {
+        match provider {
+            cli::Tunnel::Disconnect | cli::Tunnel::Status => {
+                let db = Connection::open_with_flags(
+                    storage::local_state(&db_path),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+                )?;
+                if matches!(provider, cli::Tunnel::Disconnect) {
+                    db.execute("DELETE FROM desktop_tunnel WHERE id=1", [])?;
+                    println!("Managed connection disabled.");
+                } else {
+                    let state = db
+                        .query_row(
+                            "SELECT provider,state,result FROM desktop_tunnel WHERE id=1",
+                            [],
+                            |r| {
+                                Ok((
+                                    r.get::<_, String>(0)?,
+                                    r.get::<_, String>(1)?,
+                                    r.get::<_, String>(2)?,
+                                ))
+                            },
+                        )
+                        .optional()?;
+                    match state {
+                        Some((p, s, url)) => println!("{p} {s} {url}"),
+                        None => println!("No managed connection."),
+                    }
+                }
+                return Ok(());
+            }
+            cli::Tunnel::Detect => {
+                if let Some(host) = managed_tunnel::discover(&db_path).await? {
+                    println!("{host}");
+                }
+                return Ok(());
+            }
+            cli::Tunnel::Connect { provider, host } => {
+                use std::io::Read;
+                let mut credential = String::new();
+                std::io::stdin()
+                    .take(8192)
+                    .read_to_string(&mut credential)?;
+                println!(
+                    "{}",
+                    managed_tunnel::configure(&db_path, provider, host, credential).await?
+                );
+                return Ok(());
+            }
+            _ => {}
+        }
         let bind = cli
             .options
             .bind
@@ -231,20 +287,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cli.command = Some(cli::Command::Desktop);
     }
     let worker = match cli.command {
-        Some(cli::Command::Onboard { endpoint, output }) => {
-            let token = match env::var(crate::env_name!("TOKEN")) {
-                Ok(v) => v,
-                Err(_) => Connection::open_with_flags(
-                    storage::local_state(&db_path),
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )?
-                .query_row(
-                    "SELECT upload FROM local_credentials WHERE singleton=1",
-                    [],
-                    |r| r.get(0),
-                )?,
-            };
-            return onboard::prepare(&endpoint, &output, &token);
+        Some(cli::Command::Onboard(options)) => {
+            return wizard::run(&db_path, &cli.options, options).await;
+        }
+        Some(cli::Command::Manage { action }) => {
+            return manage::run(&db_path, &cli.options, action).await;
         }
         None | Some(cli::Command::Init) => return daemon::init(&db_path, &cli.options),
         Some(cli::Command::Status) => return daemon::status(&db_path),
@@ -352,6 +399,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err("configure a separate replica operator credential of at least 32 visible ASCII characters".into());
     }
+    let proof_secret = Uuid::new_v4().simple().to_string();
+    db.execute_batch(managed_tunnel::SCHEMA)?;
+    db.execute(
+        "INSERT OR REPLACE INTO tunnel_runtime VALUES(1,?1,?2)",
+        params![proof_secret, prefix],
+    )?;
+    let challenge_secret = proof_secret.clone();
     let archive = Archive {
         remote: remote.map(Arc::new),
         replica_reader: replica_reader.map(|s| format!("Bearer {s}").into()),
@@ -362,7 +416,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     webhooks::start(archive.clone())?;
     let sync_routes = sync::configure(&archive, &db_path)?;
+    let monitor = archive.clone();
     let app = Router::new()
+        .route(
+            "/.well-known/psms/verify/{nonce}",
+            get(
+                move |axum::extract::Path(nonce): axum::extract::Path<Uuid>| async move {
+                    public_host::proof(&challenge_secret, &nonce.to_string())
+                },
+            ),
+        )
         .route(
             "/.well-known/psms",
             get(|| async { Json(serde_json::json!({"service":"psms","version":1})) }),
@@ -403,6 +466,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     if let Some(ref running) = worker {
         running.ready(listener.local_addr()?)?;
+    }
+    if worker.is_some() {
+        let addr = listener.local_addr()?;
+        let local = if addr.ip().is_unspecified() {
+            std::net::SocketAddr::from(([127, 0, 0, 1], addr.port()))
+        } else {
+            addr
+        };
+        managed_tunnel::watch(monitor, local, prefix, proof_secret, db_path.clone());
     }
     let stop_request = worker.as_ref().map(daemon::Worker::request_path);
     axum::serve(listener, app)

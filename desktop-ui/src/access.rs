@@ -1,5 +1,38 @@
 use super::*;
 
+fn show_token(label: &str, token: String, window: &mut Window, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(token.clone()));
+    let title = format!("{label} bearer token");
+    let field = cx.new(|cx| InputState::new(window, cx).default_value(token.clone()));
+    window.open_dialog(cx, move |dialog, _, _| {
+        let copy = token.clone();
+        dialog
+            .title(title.clone())
+            .w(px(520.))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_3()
+                    .child("Copied to clipboard. Save this token before closing.")
+                    .child(Input::new(&field).readonly(true)),
+            )
+            .footer(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        button("copy-secret", "Copy again").on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                        }),
+                    )
+                    .child(
+                        button("token-done", "Done")
+                            .primary()
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+            )
+    });
+}
 impl Dashboard {
     pub(super) fn access_view(&self, cx: &mut Context<Self>) -> Div {
         let mut view = div()
@@ -45,15 +78,20 @@ impl Dashboard {
                     );
             row = row.child(
                 Button::new(("issue", index))
+                    .icon(if exists {
+                        IconName::RotateCw
+                    } else {
+                        IconName::Plus
+                    })
                     .label(if exists {
                         "Rotate token"
                     } else {
                         "Create token"
                     })
-                    .on_click(cx.listener(move |s, _, _, cx| {
+                    .on_click(cx.listener(move |s, _, w, cx| {
                         match app_tokens::issue(&s.db, scope, s.expiry) {
                             Ok(token) => {
-                                s.issued = Some((label.into(), token));
+                                show_token(label, token, w, cx);
                                 s.notice.clear()
                             }
                             Err(_) => {
@@ -65,38 +103,21 @@ impl Dashboard {
                     })),
             );
             if exists {
-                row = row.child(Button::new(("revoke", index)).label("Revoke").on_click(
-                    cx.listener(move |s, _, _, cx| {
-                        if app_tokens::revoke(&s.db, scope).is_ok() {
-                            s.issued = None;
-                            s.notice = format!("{label} token revoked.")
-                        } else {
-                            s.notice = "Could not revoke token.".into()
-                        }
-                        cx.notify()
-                    }),
-                ))
+                row = row.child(
+                    Button::new(("revoke", index))
+                        .icon(IconName::Ban)
+                        .label("Revoke")
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            if app_tokens::revoke(&s.db, scope).is_ok() {
+                                s.notice = format!("{label} token revoked.")
+                            } else {
+                                s.notice = "Could not revoke token.".into()
+                            }
+                            cx.notify()
+                        })),
+                )
             }
             view = view.child(row);
-        }
-        if let Some((label, _)) = &self.issued {
-            view =
-                view.child(
-                    div()
-                        .h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(self.caption(format!("{label} token is ready to copy once.")))
-                        .child(button("copy-secret", "Copy token").primary().on_click(
-                            cx.listener(|s, _, _, cx| {
-                                if let Some((_, secret)) = s.issued.take() {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(secret));
-                                    s.notice = "Token copied.".into()
-                                }
-                                cx.notify()
-                            }),
-                        )),
-                );
         }
         view = view
             .child(self.heading("Event webhooks"))
@@ -112,7 +133,7 @@ impl Dashboard {
                         } else {
                             match hook_store::create(&s.db, &url) {
                                 Ok((_, token)) => {
-                                    s.issued = Some((url, token));
+                                    show_token(&url, token, w, cx);
                                     s.delivery_url.update(cx, |i, cx| i.set_value("", w, cx));
                                     s.notice.clear()
                                 }
@@ -136,10 +157,11 @@ impl Dashboard {
                         .child(div().flex_1().child(self.caption(url)))
                         .child(
                             Button::new(("rotate-hook", index))
+                                .icon(IconName::RotateCw)
                                 .label("Rotate token")
-                                .on_click(cx.listener(move |s, _, _, cx| {
+                                .on_click(cx.listener(move |s, _, w, cx| {
                                     match hook_store::rotate(&s.db, &id) {
-                                        Ok(Some(token)) => s.issued = Some((name.clone(), token)),
+                                        Ok(Some(token)) => show_token(&name, token, w, cx),
                                         _ => s.notice = "Could not rotate webhook token.".into(),
                                     }
                                     cx.notify()
@@ -147,13 +169,11 @@ impl Dashboard {
                         )
                         .child(
                             Button::new(("remove-hook", index))
+                                .icon(IconName::Delete)
                                 .label("Remove")
                                 .on_click(cx.listener(move |s, _, _, cx| {
                                     match hook_store::remove(&s.db, &remove) {
-                                        Ok(true) => {
-                                            s.issued = None;
-                                            s.notice = "Destination removed.".into()
-                                        }
+                                        Ok(true) => s.notice = "Destination removed.".into(),
                                         _ => s.notice = "Could not remove destination.".into(),
                                     }
                                     cx.notify()

@@ -4,6 +4,7 @@ mod access;
 #[allow(dead_code)]
 mod app_tokens;
 mod archive;
+mod connect;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
 mod setup;
@@ -48,8 +49,8 @@ struct Dashboard {
     search: Entity<InputState>,
     key: Entity<InputState>,
     endpoint: Entity<InputState>,
+    form: connect::Form,
     delivery_url: Entity<InputState>,
-    issued: Option<(String, String)>,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -63,7 +64,39 @@ struct Dashboard {
     data_version: i64,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
-    Button::new(id).label(label)
+    let b = Button::new(id).label(label);
+    let icon = match id {
+        "refresh" => IconName::RefreshCw,
+        "disconnect" => IconName::Ban,
+        "config" => IconName::Settings,
+        "prev" | "back" => IconName::ChevronLeft,
+        "next" | "verify" | "later" => IconName::ChevronRight,
+        "copy-secret" | "command" => IconName::Copy,
+        "connect" | "start" | "setup" | "prepare" | "save-hook" => IconName::Network,
+        "activate" | "done" | "token-done" => IconName::Check,
+        "filter" => IconName::Star,
+        "unlock-switch" | "unlock" => {
+            if label == "Lock archive" {
+                IconName::EyeOff
+            } else {
+                IconName::Eye
+            }
+        }
+        "files" => IconName::FolderOpen,
+        "help" | "api-docs" => IconName::BookOpen,
+        "return" => IconName::Inbox,
+        "add-destination" => IconName::Plus,
+        "direct" | "cf-login" | "ngrok-account" => IconName::Globe,
+        "appearance" => {
+            if label == "Use light mode" {
+                IconName::Sun
+            } else {
+                IconName::Moon
+            }
+        }
+        _ => return b,
+    };
+    b.icon(icon)
 }
 impl Dashboard {
     fn color(&self, light: u32) -> Rgba {
@@ -127,7 +160,6 @@ impl Dashboard {
         }
     }
     fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
-        self.issued = None;
         self.screen = screen;
         self.notice.clear();
         self.unlock_box = false;
@@ -450,13 +482,14 @@ impl Dashboard {
                     m.text.clone()
                 };
                 let mut actions=div().h_flex().items_center().gap_2().child(self.caption(m.time.clone()))
-                    .child(Button::new(("star",i)).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
+                    .child(Button::new(("star",i)).icon(if starred{IconName::StarOff}else{IconName::Star}).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
                         if !(if s.external { setup::cli(&s.path).and_then(|mut cmd|cmd.args(["storage","desktop-star",&id,&(!starred).to_string()]).output()).is_ok_and(|out|out.status.success()) } else {s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_ok()}) {s.notice="Could not change this star.".into()}s.refresh();cx.notify()
                     })));
                 if m.pgp {
                     let text = m.text.clone();
                     actions = actions.child(
                         Button::new(("copy", i))
+                            .icon(IconName::Copy)
                             .ghost()
                             .label("Copy ciphertext")
                             .on_click(cx.listener(move |s, _, _, cx| {
@@ -666,7 +699,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cx.new(|cx| InputState::new(window, cx).placeholder("Search this page"));
                     let endpoint = cx.new(|cx| {
                         InputState::new(window, cx)
-                            .placeholder("https://your-host.example/v1/messages")
+                            .placeholder("archive.example.com")
                     });
                     let hook_url =
                         cx.new(|cx| InputState::new(window, cx).placeholder("Receiver URL"));
@@ -731,7 +764,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .detach();
                         let storage_file=cx.new(|cx|InputState::new(window,cx).placeholder("Path to private connection file"));
-                        let mut s = Dashboard {
+                        let form=connect::Form::new(&db,&endpoint,window,cx);
+                        let mut s = Dashboard {form,
                             storage_engine:None,storage_file,migrating:false,
                             db,
                             external, external_page:None, external_newest:0,
@@ -755,7 +789,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             hook_url,
                             hook_token,
                             delivery_url,
-                            issued: None,
                             expiry: Some(30),
                             session_key: None,
                             unlock_box: false,
@@ -769,6 +802,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )),
                             data_version,
                         };
+                        if s.screen==Screen::Setup && s.step==1 {s.detect_domain(window,cx);}
                         s.refresh();
                         s
                     })

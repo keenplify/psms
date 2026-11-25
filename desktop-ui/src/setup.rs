@@ -2,7 +2,6 @@ use super::*;
 use std::{
     io::Write,
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub fn cli(path: &std::path::Path) -> std::io::Result<Command> {
@@ -74,14 +73,17 @@ impl Dashboard {
         self.step = if self.folder.is_some() { 2 } else { 0 };
         self.show(Screen::Setup, cx)
     }
-    fn save_step(&mut self, step: u8, cx: &mut Context<Self>) {
+    fn save_step(&mut self, step: u8, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .db
             .execute("UPDATE desktop_setup SET step=?1 WHERE id=1", [step])
             .is_ok()
         {
             self.step = step;
-            self.notice.clear()
+            self.notice.clear();
+            if step == 1 {
+                self.detect_domain(window, cx);
+            }
         } else {
             self.notice = "Could not save your setup progress.".into()
         }
@@ -98,33 +100,6 @@ impl Dashboard {
             return;
         }
         self.show(Screen::Inbox, cx);
-    }
-    fn prepare(&mut self, cx: &mut Context<Self>) {
-        let endpoint = self.endpoint.read(cx).value().trim().to_owned();
-        let folder = self.path.with_file_name(format!(
-            "pSMS-pairing-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        let result = cli(&self.path).and_then(|mut cmd| {
-            cmd.arg("onboard")
-                .arg("--endpoint")
-                .arg(&endpoint)
-                .arg("--output")
-                .arg(&folder)
-                .output()
-        });
-        let baseline = self.newest();
-        match result{
-       Ok(out) if out.status.success()=>{
-         if self.db.execute("UPDATE desktop_setup SET folder=?1,baseline=?2,step=2 WHERE id=1",(folder.to_string_lossy().as_ref(),baseline)).is_ok(){self.folder=Some(folder);self.baseline=baseline;self.step=2;self.notice.clear()}
-         else{self.notice=format!("Files saved in {}. Could not save wizard progress.",folder.display())}
-       }
-       _=>self.notice="Could not prepare the shortcut. Enter this archive’s full HTTPS address ending in /messages and check the archive is writable.".into()
-    }
-        cx.notify()
     }
     pub fn newest(&self) -> i64 {
         if self.external {
@@ -182,16 +157,13 @@ impl Dashboard {
             .child(self.caption(format!("Step {} of 4", self.step + 1)));
         match self.step{
     0=>card=card.child(self.heading("Your private message archive")).child("Incoming messages will appear in this inbox. Your phone encrypts them before sending.").child(self.storage_view(cx))
-        .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,_,cx|s.save_step(1,cx))))),
-    1=>card=card.child(self.heading("Connect your iPhone")).child("Enter the public HTTPS endpoint for this archive. If it’s on your computer, point a tunnel or HTTPS proxy at the local service first.")
-        .child(Input::new(&self.endpoint)).child(self.caption("Use your own endpoint and upload credentials together. Android capture is coming next."))
-        .child(div().h_flex().gap_2().child(button("prepare","Create private shortcut").primary().on_click(cx.listener(|s,_,_,cx|s.prepare(cx))))
-            .child(button("network-guide","Network setup").ghost().on_click(|_,_,cx|cx.open_url(GUIDE)))),
+        .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(1,w,cx))))),
+    1=>card=card.child(self.heading("Connect a phone")).child(self.connection_view(cx)),
     2=>{card=card.child(self.heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
         .child(div().h_flex().gap_2().child(button("files","Open pairing folder").on_click(cx.listener(|s,_,_,cx|{if let Some(p)=&s.folder{cx.open_with_system(p)}})))
         .child(button("command","Copy signing command").on_click(cx.listener(|s,_,_,cx|{cx.write_to_clipboard(ClipboardItem::new_string("shortcuts sign --mode anyone --input pSMS_Encrypted.shortcut --output pSMS_Ready.shortcut".into()));s.notice="Signing command copied.".into();cx.notify()}))))
         .child("Install Actions on the iPhone, import the signed shortcut, then enable a Message automation that passes its input to that shortcut.")
-        .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,_,cx|s.save_step(3,cx)))));},
+        .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(3,w,cx)))));},
     _=>{let received=self.newest()>self.baseline;
        card=card.child(self.heading(if received{"A message arrived"}else{"Try a test message"}))
         .child(if received{"This archive received an encrypted upload since pairing. Use your recovery key to unlock its contents in the inbox."}else{"Have another phone send you a text matching your automation. This screen checks for new encrypted uploads automatically."})
@@ -203,12 +175,16 @@ impl Dashboard {
         if self.step > 0 {
             footer = footer.child(
                 button("back", "Back")
+                    .disabled(self.form.busy)
                     .ghost()
-                    .on_click(cx.listener(|s, _, _, cx| s.save_step(s.step.saturating_sub(1), cx))),
+                    .on_click(
+                        cx.listener(|s, _, w, cx| s.save_step(s.step.saturating_sub(1), w, cx)),
+                    ),
             )
         }
         footer = footer.child(
             button("later", "Set up later")
+                .disabled(self.form.busy)
                 .ghost()
                 .on_click(cx.listener(|s, _, _, cx| s.finish(cx))),
         );
@@ -295,6 +271,30 @@ impl Dashboard {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Archive replication"),
             );
+        if let Ok((provider, state)) = self.db.query_row(
+            "SELECT provider,state FROM desktop_tunnel WHERE id=1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        ) {
+            card = card
+                .child(self.caption(format!("Phone connection · {provider} · {state}")))
+                .child(
+                    button("disconnect", "Disconnect phone route").on_click(cx.listener(
+                        |s, _, _, cx| {
+                            s.notice = if s
+                                .db
+                                .execute("DELETE FROM desktop_tunnel WHERE id=1", [])
+                                .is_ok()
+                            {
+                                "Cleared the managed connection.".into()
+                            } else {
+                                "Could not clear the connection.".into()
+                            };
+                            cx.notify()
+                        },
+                    )),
+                );
+        }
         let access = self.access_view(cx);
         if let Some(endpoint) = self.hook_status() {
             let pending = self

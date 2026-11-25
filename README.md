@@ -46,6 +46,12 @@ The default archive is `~/Library/Application Support/papamo-sms/papamo.sqlite3`
 
 Run `psms desktop` for the native inbox. Owner and upload tokens are generated in the private archive by default. When providing an explicit PSMS_TOKEN, set a distinct PSMS_OWNER_TOKEN for owner HTTP access, or omit it for upload-only HTTP. Protect the database and backups at the OS level.
 
+### Automatic phone connection
+
+Opening **Connect a phone** checks for an existing public hostname. This requests the outward-facing IP from Cloudflare, looks up its reverse DNS record and verifies forward DNS and an HTTPS challenge from this pSMS instance. A working public hostname becomes the default. A domain with no reverse DNS association can still be entered under **Use custom domain**.
+
+The fallback is a named tunnel with an editable suggestion derived from the computer name. ngrok is built in. Supply your ngrok authtoken once. If the initial suggested name is unavailable, pSMS tries the account's assigned hostname. To choose a different ngrok-branded name, use an eligible account and domain. Cloudflare requires cloudflared on PATH and a zone you control. Sign in once, enter the zone and connect. pSMS creates a named tunnel and registers the route. Your daemon runs the connector while the desktop is closed and reloads its configuration when restarted. Keep local archive settings and Cloudflare credentials private. The wizard verifies HTTPS before writing the shortcut with the archive's configured API prefix.
+
 ### Encrypted upload contract
 
 POST JSON containing `id`, `sender`, and `body` to the configured prefix plus `/messages` with the bearer upload token. The sender field contains the provider marker. Encrypt the actual sender and text together on the device.
@@ -110,7 +116,7 @@ Use a separate archive database and credentials for each recipient. The new encr
 
 To search, run `psms contact-id --key-file archive-recovery-key.txt` on the owner's device and enter the exact sender tag or phone number. Use the resulting ID with `GET /v1/contacts?contact_id=ID`. Owner routes also include `GET /v1/contacts/ID?include=messages` and `GET /v1/contacts/ID/messages`. Expansion includes up to five encrypted messages per contact. Follow the returned cursor on the messages endpoint for more.
 
-In desktop Settings, create an Owner API token or a Browser autofill token, choose an expiration and click **Copy token**. Rotation replaces the selected token immediately. Revocation disables it. Existing installation administrator credentials remain separately managed. Browser tokens can only fetch recent encrypted Actions envelopes. Use separate tokens per webhook destination. Event delivery credentials must be available to the sending daemon, so protect archive files and backups.
+In desktop Settings, create an Owner API token or a Browser autofill token, choose an expiration and click **Create token**. A one-time dialog displays the bearer and copies it to the clipboard. Choose **Copy again** while the dialog is open. Rotation opens the same dialog for the replacement token. Rotation replaces the selected token immediately. Revocation disables it. Existing installation administrator credentials remain separately managed. Browser tokens can only fetch recent encrypted Actions envelopes. Use separate tokens per webhook destination. Event delivery credentials must be available to the sending daemon, so protect archive files and backups.
 
 Create HTTPS destinations under Settings, or use `POST /v1/webhooks` with an owner bearer token and a JSON object containing `url`. List with GET, rotate with `POST /v1/webhooks/ID/rotate`, and remove with `DELETE /v1/webhooks/ID`. Creation and rotation return the new token once. Each destination receives a JSON object with delivery_id, event and message_id. Handle repeated deliveries idempotently. Message content and sender names are excluded.
 
@@ -134,3 +140,28 @@ Start your archive, put the pSMS executable on PATH, and register its stdio serv
 For a remote archive, append `--server https://YOUR-HOST/v1 --token-file /private/owner-token.txt` to the pSMS command. Add `--key-file /private/archive-recovery-key.txt` only when you want the client to receive decrypted Actions messages. The key stays on the machine running pSMS MCP. Your AI client receives matching plaintext when you enable decryption. Without the key, the server returns metadata.
 
 Tools include `search_messages` (text, sender, date range, starred status and cursor), `get_message` (UUID), `list_contacts` (opaque contact ID and optional message expansion), and `contact_history` (exact sender or private contact ID with pagination). Follow the search cursor even when a filtered page is empty.
+
+### Command-line onboarding and management
+
+Run `psms onboard` in a terminal for domain-first setup. It tests for an existing public hostname, lets you select an existing route or a named tunnel, then saves the shortcut and recovery key in a new private folder. Use `--wait 300` to verify an incoming message after pairing. For unattended setup, use flags:
+
+```sh
+psms onboard --domain sms.example.org --output ./phone-pairing
+psms onboard --provider ngrok --credential-file /private/ngrok-token --output ./phone-pairing
+psms onboard --provider cloudflare --zone example.org --name my-desktop --output ./phone-pairing
+```
+
+Run `cloudflared tunnel login` once before creating a tunnel in your Cloudflare zone. The earlier `--endpoint https://HOST/v1/messages` mode still generates an offline shortcut for an explicitly supplied endpoint.
+
+Use `psms manage --help` for desktop-equivalent controls. Examples:
+
+```sh
+psms manage access create api --days 30
+psms manage access rotate browser
+psms manage webhook list
+psms manage sync-interval 21600
+psms manage inbox list --starred --key-file ./archive-recovery-key.txt
+psms manage theme dark
+```
+
+The CLI prints newly issued credentials once. The GUI copies the raw token and displays it in a one-time dialog. Use `Authorization: Bearer TOKEN` in API requests.

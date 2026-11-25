@@ -1,6 +1,6 @@
 [package]
 name = "papamo-sms"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 license = "MIT"
 
@@ -26,13 +26,16 @@ serde_json = "1"
 sha2 = "0.10.9"
 subtle = "2.6.1"
 sysinfo = { version = "0.37", default-features = false, features = ["system"] }
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "time", "process"] }
 uuid = { version = "1.29.3", features = ["serde", "v4"] }
 rbdc = "4.9.11"
 rbdc-pg = "4.9.13"
 rbdc-mysql = "4.9.12"
 rbdc-mssql = "4.9.9"
 rbs = "4"
+ngrok = { version = "0.19.1", default-features = false, features = ["ring"] }
+hostname = "0.3"
+dialoguer = "0.12"
 
 [target."cfg(windows)".dependencies]
 tray-icon = { version = "0.27.0", default-features = false }

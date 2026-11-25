@@ -4,6 +4,9 @@ use std::{error::Error, net::SocketAddr, process::Command};
 pub fn run(provider: Tunnel, bind: SocketAddr) -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::new("cloudflared");
     match provider {
+        Tunnel::Status | Tunnel::Disconnect | Tunnel::Detect | Tunnel::Connect { .. } => {
+            unreachable!()
+        }
         Tunnel::Quick => {
             if !bind.ip().is_loopback() || bind.port() == 0 {
                 return Err("quick tunnel requires a fixed loopback address".into());

@@ -48,13 +48,11 @@ pub enum Command {
     /// Initialize the archive and start the background service (default).
     Init,
     /// Prepare a private, preconfigured Actions shortcut for this archive.
-    Onboard {
-        /// Public HTTPS messages endpoint reachable from the phone.
-        #[arg(long)]
-        endpoint: String,
-        /// New private output directory on the owner's machine.
-        #[arg(long)]
-        output: PathBuf,
+    Onboard(crate::wizard::Options),
+    /// Manage scoped tokens, webhooks, sync timing, appearance and inbox messages.
+    Manage {
+        #[command(subcommand)]
+        action: crate::manage::Action,
     },
     /// Show whether the local background service is running.
     Status,
@@ -82,6 +80,18 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum Tunnel {
+    /// Stop the managed connector and clear its saved configuration.
+    Disconnect,
+    /// Show the managed connector and its latest verified endpoint.
+    Status,
+    /// Detect a public hostname that reaches this archive over HTTPS.
+    Detect,
+    /// Configure the background connector. Read its credential from stdin.
+    Connect {
+        provider: String,
+        #[arg(default_value = "")]
+        host: String,
+    },
     /// Start a temporary Cloudflare HTTPS URL using cloudflared on PATH.
     Quick,
     /// Connect a remotely managed Cloudflare tunnel with a stable hostname.

@@ -212,6 +212,7 @@ pub async fn switch(path: &Path, engine: Engine, file: &Path) -> Result<()> {
     for table in [
         "local_credentials",
         "desktop_setup",
+        "desktop_tunnel",
         "desktop_preferences",
         "desktop_appearance",
         "app_tokens",
