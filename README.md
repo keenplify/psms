@@ -105,3 +105,14 @@ Open the extension to detect pSMS on the default local port or enter the full AP
 Focus the verification-code field. A recent SMS ending in a line such as `@example.com #123456` can show **Autofill from GLOBE** and **123 456**. Click the suggestion to fill the field. The extension decrypts on this device, verifies the exact HTTPS hostname and ignores unbound SMS and messages over five minutes old. The sender label comes from the message and does not certify the sender.
 
 Settings also lets you change the appearance and sync interval. New installations sync every six hours when capacity allows. The desktop starts with the system appearance and remembers a manual change. Environment variables use the `PSMS_` prefix. Previous `PAPAMO_` names remain supported when their replacements are unset.
+
+## Connect Claude or Codex through MCP
+
+Start your archive, put the pSMS executable on PATH, and register its stdio server with your client:
+
+    codex mcp add psms -- psms mcp
+    claude mcp add --transport stdio psms -- psms mcp
+
+For a remote archive, append `--server https://YOUR-HOST/v1 --token-file /private/owner-token.txt` to the pSMS command. Add `--key-file /private/archive-recovery-key.txt` only when you want the client to receive decrypted Actions messages. The key stays on the machine running pSMS MCP. Your AI client receives matching plaintext when you enable decryption. Without the key, the server returns metadata.
+
+Tools include `search_messages` (text, sender, date range, starred status and cursor), `get_message` (UUID), and `list_contacts` (opaque contact ID and optional message expansion). Follow the search cursor even when a filtered page is empty.

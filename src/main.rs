@@ -17,10 +17,12 @@ mod cli;
 mod contacts;
 mod daemon;
 use clap::Parser;
+mod decrypt;
 mod desktop;
 mod encryption;
 mod hook_store;
 mod inbox;
+mod mcp;
 mod native;
 mod onboard;
 mod sync;
@@ -174,6 +176,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let db_path = database_path(cli.options.database.take())?;
+    if let Some(cli::Command::Mcp {
+        server,
+        token_file,
+        key_file,
+    }) = cli.command
+    {
+        return mcp::run(
+            &db_path,
+            &cli.options.api_prefix,
+            server,
+            token_file,
+            key_file,
+        )
+        .await;
+    }
     if let Some(cli::Command::Sync { command }) = cli.command {
         return sync::setup(&db_path, command);
     }

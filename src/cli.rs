@@ -17,6 +17,18 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Serve read-only Model Context Protocol tools over stdin/stdout.
+    Mcp {
+        /// Archive API base URL. Defaults to the running local archive.
+        #[arg(long)]
+        server: Option<String>,
+        /// Owner API bearer token file (required for remote servers).
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Enable local sender and body searches with this private Actions recovery key.
+        #[arg(long)]
+        key_file: Option<PathBuf>,
+    },
     /// Pair archives, enable scheduled synchronization or inspect the queue.
     Sync {
         #[command(subcommand)]

@@ -1,6 +1,6 @@
 [package]
 name = "papamo-sms"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 
@@ -9,6 +9,8 @@ name = "psms"
 path = "src/main.rs"
 
 [dependencies]
+aes-gcm = "0.10"
+rmcp = { version = "3.11", features = ["transport-io"] }
 url = "2"
 axum = "0.8.9"
 base64 = "0.23.1"
