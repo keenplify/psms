@@ -31,6 +31,8 @@ enum Screen {
     Setup,
 }
 struct Dashboard {
+    update: Option<String>,
+    updating: bool,
     db: Connection,
     path: PathBuf,
     external: bool,
@@ -576,6 +578,22 @@ impl Render for Dashboard {
             .bg(self.color(0xffffff))
             .text_color(self.color(INK))
             .child(div().flex_1().min_h_0().child(layout));
+        if let Some(version) = &self.update {
+            root=root.child(div().h_flex().gap_3().px_4().py_2().items_center()
+                .child(format!("pSMS {version} is ready to install."))
+                .child(button("apply-update","Restart to update").disabled(self.updating)
+                .on_click(cx.listener(|s,_,_,cx|{
+                    let Some(selected)=s.update.clone() else{return};
+s.updating=true;cx.notify();
+                    let path=s.path.clone();
+                    cx.spawn(async move|this,cx|{
+                        let ok=cx.background_executor().spawn(async move{
+                            setup::cli(&path).and_then(|mut cmd|cmd.args(["update","--restart",&selected]).output()).is_ok_and(|o|o.status.success())
+                        }).await;
+                        let _=this.update(cx,|s,cx|{if ok{cx.quit()}else{s.updating=false;s.notice="Could not apply the update. Try again or run psms update.".into();cx.notify()}});
+                    }).detach()
+                }))));
+        }
         if !self.notice.is_empty() {
             root = root.child(
                 div()
@@ -717,7 +735,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         )
                         .detach();
-                        cx.spawn(async move |this, cx| {
+                        let update_path=path.clone();
+                        cx.spawn(async move |this,cx|{
+                            let version=cx.background_executor().spawn(async move {
+                                let result=setup::cli(&update_path).ok()?.args(["update","--prepare"]).output().ok()?;
+                                if !result.status.success(){return None}
+                                let v=String::from_utf8(result.stdout).ok()?.trim().to_string();
+                                (!v.is_empty()).then_some(v)
+                            }).await;
+                            let _=this.update(cx,|s,cx|{s.update=version;cx.notify()});
+                        }).detach();                        cx.spawn(async move |this, cx| {
                             loop {
                                 let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
                                 if let Some((path,page,starred))=params {
@@ -765,7 +792,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .detach();
                         let storage_file=cx.new(|cx|InputState::new(window,cx).placeholder("Path to private connection file"));
                         let form=connect::Form::new(&db,&endpoint,window,cx);
-                        let mut s = Dashboard {form,
+                        let mut s = Dashboard {form, update:None, updating:false,
                             storage_engine:None,storage_file,migrating:false,
                             db,
                             external, external_page:None, external_newest:0,

@@ -35,6 +35,7 @@ mod sync;
 #[cfg(windows)]
 mod tray;
 mod tunnel;
+mod updater;
 mod webhooks;
 mod wizard;
 
@@ -179,6 +180,7 @@ fn contact_id(sender: &str, key: &str) -> String {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    updater::dispatch()?;
     let mut cli = cli::Cli::parse();
     if let Some(cli::Command::ContactId { key_file }) = &cli.command {
         let key = std::fs::read_to_string(key_file)?;
@@ -287,6 +289,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cli.command = Some(cli::Command::Desktop);
     }
     let worker = match cli.command {
+        Some(cli::Command::Update(options)) => {
+            return updater::run(options, &db_path, &cli.options).await;
+        }
         Some(cli::Command::Onboard(options)) => {
             return wizard::run(&db_path, &cli.options, options).await;
         }

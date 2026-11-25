@@ -1,6 +1,8 @@
 """Package all native CI artifacts, preserving POSIX executable permissions."""
 import json
 import hashlib
+import subprocess
+import tempfile
 import os
 import shutil
 from pathlib import Path
@@ -23,6 +25,8 @@ for target, label in targets.items():
     ext = ".exe" if windows else ""
     files = [folder / (name + ext) for name in ("psms", "psms-desktop")]
     docs = list(map(Path, ["README.md", "SYNC.md", "LICENSE"]))
+    for name in ("psms", "psms-desktop"):
+        shutil.copyfile(folder / (name + ext), out / (name + "-" + label + ext))
     archive = out / ("psms-" + label + (".zip" if windows else ".tar.gz"))
     if windows:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
@@ -53,7 +57,19 @@ for browser in ("chrome","firefox"):
         for file in sorted(source.iterdir()):
             if file.name != "manifest.json":
                 z.write(file,file.name)
+# Include the authoritative schema with its compatible server build.
+shutil.copyfile("hosted/target/release/psms-hosted", out/"psms-hosted-linux-x64")
+shutil.copyfile("hosted/schema.sql",out/"psms-hosted-schema.sql")
 for file in sorted(out.iterdir()):
     with file.open("rb") as stream:
         checksums.append(hashlib.file_digest(stream, "sha256").hexdigest() + "  " + file.name)
 (out / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
+# Sign the exact version and every downloadable digest as one release.
+manifest = {"version":version,"files":dict((line[66:],line[:64]) for line in checksums)}
+path = out / "update.json"
+path.write_bytes(json.dumps(manifest, sort_keys=True, separators=(",",":")).encode())
+with tempfile.TemporaryDirectory() as temp:
+    key = Path(temp) / "key.pem"
+    key.write_text(os.environ.pop("PSMS_RELEASE_SIGNING_KEY").strip() + "\n")
+    subprocess.run(["openssl","pkeyutl","-sign","-rawin","-inkey",str(key),"-in",str(path),"-out",str(out/"update.sig")],check=True)
+subprocess.run(["openssl","pkeyutl","-verify","-rawin","-pubin","-inkey","packaging/update-public.pem","-in",str(path),"-sigfile",str(out/"update.sig")],check=True)

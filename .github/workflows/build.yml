@@ -88,7 +88,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: binaries
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build hosted API for regional Linux servers
+        run: cargo build --release --locked --manifest-path hosted/Cargo.toml
       - name: Package native downloads
+        env:
+          PSMS_RELEASE_SIGNING_KEY: ${{ secrets.PSMS_RELEASE_SIGNING_KEY }}
         run: python scripts/package-release.py
       - name: Publish verified tag
         env:
@@ -97,3 +102,26 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --generate-notes --title "pSMS $RELEASE_TAG"
           gh release edit "$RELEASE_TAG" --draft=false
+  rollout:
+    needs: release
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: production-psms-rollout
+      cancel-in-progress: false
+    steps:
+      - name: Apply the signed release one region at a time
+        env:
+          SSH_KEY: ${{ secrets.PSMS_ROLLOUT_KEY }}
+          HOST_KEYS: ${{ secrets.PSMS_ROLLOUT_HOST_KEYS }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/rollout-key"
+          printf '%s\n' "$HOST_KEYS" > "$RUNNER_TEMP/rollout-hosts"
+          for host in na sg ws sa; do
+            printf '%s\n' "$RELEASE_TAG" | ssh -T -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/rollout-hosts" -i "$RUNNER_TEMP/rollout-key" "psms_rollout@$host.sms.papamo.dev"
+            curl --fail --silent --show-error --retry 3 --max-time 10 "https://$host.sms.papamo.dev/free/v1/readyz"
+          done

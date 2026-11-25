@@ -17,6 +17,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Verify and activate the latest stable release for this OS user.
+    Update(crate::updater::Options),
     /// Inspect or migrate authoritative archive storage.
     Storage {
         #[command(subcommand)]

@@ -1930,7 +1930,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "papamo-sms"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -1940,6 +1940,7 @@ dependencies = [
  "dirs 7.0.0",
  "getrandom 0.4.3",
  "hostname",
+ "libc",
  "ngrok",
  "plist",
  "rbdc",
@@ -1948,8 +1949,10 @@ dependencies = [
  "rbdc-pg",
  "rbs",
  "reqwest",
+ "ring",
  "rmcp",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2928,6 +2931,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
