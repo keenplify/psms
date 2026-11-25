@@ -168,8 +168,10 @@ The CLI prints newly issued credentials once. The GUI copies the raw token and d
 
 ## Hosted accounts
 
-Sign in at [Papamo accounts](https://www.papamo.dev/login) with an existing 1.6 Competitive account, Google or Discord. The Singapore identity service verifies the account. Selecting pSMS creates a product membership keyed to its stable Singapore account ID. A free archive holds up to 1,000 encrypted messages.
+Sign in at [Papamo accounts](https://www.papamo.dev/login) with an existing 1.6 Competitive account, Google or Discord. The Singapore identity service verifies the account. Selecting pSMS creates a product membership keyed to its stable Singapore account ID. A free archive holds up to 1,000 encrypted messages. Accounts with the 1.6 Competitive system_admin role have unlimited message storage. The account page shows the current allowance.
 
 The regional Rust services use Chicago as the PostgreSQL write primary. Singapore runs an asynchronous read-only standby. A regional service connects over an SSH tunnel using its own database role. Promotion is manual: fence the old primary before promoting the standby and repointing writers. A replica also replays deletions, so it does not replace independent backups.
 
 Operators with the provisioned SSH aliases can build the hosted binary on Linux with `cargo build --release --locked --manifest-path hosted/Cargo.toml`, then run `python scripts/update-hosted.py hosted/target/release/psms-hosted --publish`. The script applies the schema in Chicago, verifies the binary checksum per host, restarts each regional service, and checks readiness. Run `hosted/deploy/smoke.py` on Chicago as the operator to verify isolation and the concurrent quota boundary.
+
+Singapore checks the authoritative system_admin assignments every minute and replaces a short-lived role snapshot in Chicago. Promotion and demotion apply to existing upload tokens. If sync stops for five minutes, ordinary limits resume until the next successful refresh. Demotion preserves every message and pauses new uploads while the archive is at or above the free limit. List large archives with GET /free/v1/messages?limit=100&offset=0 and pass the returned next_offset until it is null. Operators can trigger an immediate refresh with systemctl start psms-admin-sync on Singapore.

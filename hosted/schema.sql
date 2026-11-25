@@ -20,4 +20,19 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS sg_subject text;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_sg_subject ON accounts(sg_subject);
+CREATE TABLE IF NOT EXISTS admin_role_snapshot (
+ singleton boolean PRIMARY KEY CHECK (singleton),
+ subjects jsonb NOT NULL CHECK (jsonb_typeof(subjects)='array'),
+ expires_at timestamptz NOT NULL
+);
+REVOKE ALL ON admin_role_snapshot FROM psms_runtime;
+GRANT SELECT ON admin_role_snapshot TO psms_runtime;
+CREATE OR REPLACE VIEW archive_quota AS
+ SELECT a.id, CASE WHEN EXISTS (
+   SELECT 1 FROM admin_role_snapshot s
+   WHERE s.expires_at > statement_timestamp() AND s.subjects ? a.sg_subject
+ ) THEN NULL::bigint ELSE 1000::bigint END AS message_limit
+ FROM accounts a;
+REVOKE ALL ON archive_quota FROM psms_runtime;
+GRANT SELECT ON archive_quota TO psms_runtime;
 COMMIT;

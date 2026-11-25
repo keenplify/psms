@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{delete, get, post},
 };
@@ -27,7 +27,6 @@ type Failure = StatusCode;
 type Reply = Result<Json<Value>, Failure>;
 const DOWN: Failure = StatusCode::SERVICE_UNAVAILABLE;
 const DENIED: Failure = StatusCode::UNAUTHORIZED;
-const LIMIT: i64 = 1000;
 
 #[derive(Clone)]
 struct App {
@@ -108,9 +107,9 @@ async fn logout(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failur
 async fn me(State(a): State<App>, h: HeaderMap) -> Reply {
     let id = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let row=db.query_one("SELECT coalesce(display_name,username),(SELECT count(*) FROM archived_messages WHERE account_id=$1) FROM accounts WHERE id=$1",&[&id]).await.map_err(|_|DOWN)?;
+    let row=db.query_one("SELECT coalesce(display_name,username),(SELECT count(*) FROM archived_messages WHERE account_id=$1),q.message_limit FROM accounts a JOIN archive_quota q USING(id) WHERE a.id=$1",&[&id]).await.map_err(|_|DOWN)?;
     Ok(Json(
-        json!({"username":row.get::<_,String>(0),"used":row.get::<_,i64>(1),"limit":LIMIT}),
+        json!({"username":row.get::<_,String>(0),"used":row.get::<_,i64>(1),"limit":row.get::<_,Option<i64>>(2)}),
     ))
 }
 async fn pair(State(a): State<App>, h: HeaderMap) -> Reply {
@@ -148,27 +147,34 @@ async fn store(
     if let Some(row)=tx.query_opt("SELECT sender=$3 AND body=$4 AND contact_id IS NOT DISTINCT FROM $5 FROM archived_messages WHERE account_id=$1 AND id=$2",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?{
  return if row.get::<_,bool>(0){Ok(StatusCode::OK)}else{Err(StatusCode::CONFLICT)}
  }
-    let count: i64 = tx
-        .query_one(
-            "SELECT count(*) FROM archived_messages WHERE account_id=$1",
-            &[&user],
-        )
-        .await
-        .map_err(|_| DOWN)?
-        .get(0);
-    if count >= LIMIT {
+    let full: bool = tx.query_one(
+        "SELECT CASE WHEN message_limit IS NULL THEN false ELSE
+         (SELECT count(*) FROM (SELECT 1 FROM archived_messages WHERE account_id=$1 LIMIT message_limit) bounded) >= message_limit
+         END FROM archive_quota WHERE id=$1", &[&user]
+    ).await.map_err(|_|DOWN)?.get(0);
+    if full {
         return Err(StatusCode::INSUFFICIENT_STORAGE);
     }
     tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
     tx.commit().await.map_err(|_| DOWN)?;
     Ok(StatusCode::CREATED)
 }
-async fn list(State(a): State<App>, h: HeaderMap) -> Reply {
+#[derive(Deserialize)]
+struct Page {
+    offset: Option<u32>,
+    limit: Option<u16>,
+}
+async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> Reply {
+    let limit = i64::from(page.limit.unwrap_or(1000));
+    if !(1..=1000).contains(&limit) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let offset = i64::from(page.offset.unwrap_or(0));
     let user = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT 1000",&[&user]).await.map_err(|_|DOWN)?;
+    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
     Ok(Json(
-        json!({"messages":rows.iter().map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4)})).collect::<Vec<_>>()}),
+        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4)})).collect::<Vec<_>>()}),
     ))
 }
 async fn remove(
@@ -199,7 +205,9 @@ async fn ready(State(a): State<App>) -> Result<StatusCode, Failure> {
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file = std::fs::read_to_string("/etc/psms/hosted-db/pgpass")?;
+    let passfile =
+        std::env::var("PSMS_HOSTED_PGPASS").unwrap_or_else(|_| "/etc/psms/hosted-db/pgpass".into());
+    let file = std::fs::read_to_string(passfile)?;
     let parts: Vec<_> = file.trim_end().split(':').collect();
     let [host, port, name, user, pass] = parts.as_slice() else {
         return Err("invalid hosted database configuration".into());
@@ -234,7 +242,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(app);
     axum::serve(
-        tokio::net::TcpListener::bind("127.0.0.1:47833").await?,
+        tokio::net::TcpListener::bind((
+            std::net::Ipv4Addr::LOCALHOST,
+            std::env::var("PSMS_HOSTED_PORT")
+                .unwrap_or_else(|_| "47833".into())
+                .parse::<u16>()?,
+        ))
+        .await?,
         Router::new().nest("/free/v1", api),
     )
     .await?;
