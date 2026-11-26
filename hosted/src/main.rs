@@ -1,3 +1,4 @@
+mod browser;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -30,6 +31,7 @@ const DENIED: Failure = StatusCode::UNAUTHORIZED;
 
 #[derive(Clone)]
 struct App {
+    arrivals: tokio::sync::broadcast::Sender<Option<i64>>,
     pool: Pool,
     exchange_key: String,
 }
@@ -156,6 +158,9 @@ async fn store(
         return Err(StatusCode::INSUFFICIENT_STORAGE);
     }
     tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
+    tx.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
     tx.commit().await.map_err(|_| DOWN)?;
     Ok(StatusCode::CREATED)
 }
@@ -222,10 +227,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .user(*user)
         .password(pass)
         .connect_timeout(Duration::from_secs(4));
+    let (arrivals, _) = tokio::sync::broadcast::channel(128);
+    tokio::spawn(browser::listen(conf.clone(), arrivals.clone()));
     let pool = Pool::builder(Manager::new(conf, NoTls))
         .max_size(4)
         .build()?;
     let app = App {
+        arrivals,
         pool,
         exchange_key: std::fs::read_to_string("/etc/psms/hosted-db/identity-key")?
             .trim()
@@ -236,6 +244,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/auth/exchange", post(exchange))
         .route("/auth/session", delete(logout))
         .route("/me", get(me))
+        .route(
+            "/auth/browser",
+            post(browser::issue).delete(browser::revoke),
+        )
+        .route("/otp/recent", get(browser::recent))
+        .route("/otp/events", get(browser::events))
         .route("/pair", post(pair))
         .route("/messages", get(list).post(store))
         .route("/messages/{id}", delete(remove))

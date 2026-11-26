@@ -1,6 +1,6 @@
 [package]
 name = "papamo-sms"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2024"
 license = "MIT"
 
@@ -9,6 +9,7 @@ name = "psms"
 path = "src/main.rs"
 
 [dependencies]
+futures-util = "0.3"
 ring = "0.17"
 semver = "1"
 tempfile = "3"

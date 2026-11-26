@@ -96,6 +96,24 @@ class ArchiveTest(unittest.TestCase):
                 self.assertNotEqual(rotated["token"],hooks[0]["token"])
                 self.assertEqual(self.request("POST","/messages",upload,raw)[0],422)
                 self.assertEqual(self.request("POST","/messages","wrong",msg)[0],401)
+                browser=self.cli("manage","access","create","browser","--days","7")
+                for invalid in ("wrong",upload,owner):
+                    self.assertEqual(self.request("GET","/otp/events",invalid)[0],401)
+                req=Request(self.base+"/otp/events",headers={"Authorization":"Bearer "+browser})
+                with urlopen(req,timeout=8) as stream:
+                    def frame():
+                        lines=[]
+                        while True:
+                            line=stream.readline()
+                            if not line.strip(): return lines
+                            lines.append(line.strip())
+                    self.assertEqual(frame(),[b"event: ready",b"data: 1"])
+                    temporary=dict(msg,id=uuid.uuid4().hex)
+                    self.assertEqual(self.request("POST","/messages",upload,temporary)[0],201)
+                    self.assertEqual(frame(),[b"event: arrival",b"data: 1"])
+                    self.assertEqual(self.request("DELETE","/messages/"+temporary["id"],owner)[0],204)
+                    self.cli("manage","access","revoke","browser")
+                    self.assertEqual(self.request("GET","/otp/recent",browser)[0],401)
                 self.assertEqual(self.request("POST","/messages",upload,msg)[0],201)
                 self.assertEqual(self.request("POST","/messages",upload,msg)[0],200)
                 contact = "a" * 64

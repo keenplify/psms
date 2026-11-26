@@ -47,6 +47,17 @@ try:
     assert call("messages",token=upload)[0]==401
     assert call("messages",token=other)[1]["messages"]==[]
     assert call("messages/"+msg["id"],token=other,method="DELETE")[0]==404
+    _,first_browser=call("auth/browser",{},owner)
+    _,second_browser=call("auth/browser",{},other)
+    personal=first_browser["token"]
+    assert call("otp/recent",token=personal)[1][0]["body"]==msg["body"]
+    assert call("otp/recent",token=second_browser["token"])[1]==[]
+    for denied in ("messages","me","pair","auth/browser"):
+        assert call(denied,{} if denied in ("pair","auth/browser") else None,personal)[0]==401
+    assert call("messages",msg,personal)[0]==401
+    assert call("otp/events",token=upload)[0]==401
+    assert call("auth/browser",token=owner,method="DELETE")[0]==204
+    assert call("otp/recent",token=personal)[0]==401
     assert call("messages",msg,other)[0]==201
     sql("INSERT INTO archived_messages(account_id,id,sender,body) SELECT a.id,gen_random_uuid()::text,'papamo:encrypted:v1','fixture' FROM accounts a CROSS JOIN generate_series(1,998) WHERE a.username='"+a["subject"]+"';")
     with ThreadPoolExecutor(2) as pool:

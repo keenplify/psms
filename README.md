@@ -126,7 +126,7 @@ Download the Chrome or Firefox extension ZIP from this release. For Chrome, unzi
 
 Open the extension to detect pSMS on the default local port or enter the full API address for a custom port or HTTPS server. Enter a **Browser autofill** token from pSMS Settings and the private Actions recovery key. They stay in extension session storage until you lock or restart the browser. Enable autofill individually on each sign-in site.
 
-Focus the verification-code field. A recent SMS ending in a line such as `@example.com #123456` can show **Autofill from GLOBE** and **123 456**. Click the suggestion to fill the field. The extension decrypts on this device, verifies the exact HTTPS hostname and ignores unbound SMS and messages over five minutes old. The sender label comes from the message and does not certify the sender.
+Focus the verification-code field. While the field is active, the extension listens for authenticated arrival notifications from the archive. It fetches recent ciphertext on arrival and falls back to four-second polling when streaming is unavailable. A recent SMS ending in a line such as `@example.com #123456` can show **Autofill from GLOBE** and **123 456**. Click the suggestion to fill the field. The extension decrypts on this device, verifies the exact HTTPS hostname and ignores unbound SMS and messages over five minutes old. The sender label comes from the message and does not certify the sender.
 
 Settings also lets you change the appearance and sync interval. New installations sync every six hours when capacity allows. The desktop starts with the system appearance and remembers a manual change. Environment variables use the `PSMS_` prefix. Previous `PAPAMO_` names remain supported when their replacements are unset.
 

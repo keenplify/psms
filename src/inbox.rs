@@ -85,6 +85,7 @@ pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
         .merge(crate::webhooks::routes(prefix))
         .merge(crate::contacts::routes(prefix))
         .route_layer(middleware::from_fn_with_state(archive, authorize))
+        .route(&format!("{prefix}/otp/events"), get(browser_events))
         .route(&format!("{prefix}/otp/recent"), get(recent_for_browser))
         .route(
             &format!("{prefix}/replicas/{{source}}/messages"),
@@ -262,6 +263,47 @@ async fn replica_list(
         }
         Ok(Some(Listing{messages,next_cursor:None}))
     }).await?.map(Json).ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn browser_events(
+    State(archive): State<Archive>,
+    headers: HeaderMap,
+) -> ApiResult<impl axum::response::IntoResponse> {
+    use axum::response::sse::{Event, Sse};
+    if !archive.app_token(&headers, "browser") {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let events = archive.arrivals.subscribe();
+    let stream = futures_util::stream::unfold(
+        (events, archive, headers, true),
+        |(mut events, archive, headers, first)| async move {
+            let event = if first {
+                Event::default().event("ready").data("1")
+            } else {
+                match tokio::time::timeout(std::time::Duration::from_secs(15), events.changed())
+                    .await
+                {
+                    Ok(Ok(())) => Event::default().event("arrival").data("1"),
+                    Err(_) => Event::default().comment("keepalive"),
+                    Ok(Err(_)) => return None,
+                }
+            };
+            if !archive.app_token(&headers, "browser") {
+                return None;
+            }
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (events, archive, headers, false),
+            ))
+        },
+    );
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Sse::new(stream),
+    ))
 }
 
 async fn recent_for_browser(

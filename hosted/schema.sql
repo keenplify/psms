@@ -35,4 +35,10 @@ CREATE OR REPLACE VIEW archive_quota AS
  FROM accounts a;
 REVOKE ALL ON archive_quota FROM psms_runtime;
 GRANT SELECT ON archive_quota TO psms_runtime;
+CREATE TABLE IF NOT EXISTS browser_access (
+ account_id bigint PRIMARY KEY REFERENCES accounts ON DELETE CASCADE,
+ digest bytea UNIQUE NOT NULL,
+ expires_at timestamptz NOT NULL
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON browser_access TO psms_runtime;
 COMMIT;

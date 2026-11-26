@@ -58,6 +58,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 struct Archive {
+    arrivals: tokio::sync::watch::Sender<()>,
     remote: Option<Arc<storage::Target>>,
     db: Arc<Mutex<Connection>>,
     credential: Arc<str>,
@@ -130,21 +131,27 @@ async fn receive(
         }
         id.make_ascii_lowercase();
     }
-    if let Some(remote) = &archive.remote {
-        return remote
+    let arrivals = archive.arrivals.clone();
+    let status = if let Some(remote) = &archive.remote {
+        remote
             .insert(&message)
             .await
             .ok()
             .and_then(|s| StatusCode::from_u16(s).ok())
-            .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-    }
-    match tokio::task::spawn_blocking(move || archive.store(message)).await {
-        Ok(Ok(status)) => status,
-        _ => {
-            eprintln!("Message storage failed");
-            StatusCode::SERVICE_UNAVAILABLE
+            .unwrap_or(StatusCode::SERVICE_UNAVAILABLE)
+    } else {
+        match tokio::task::spawn_blocking(move || archive.store(message)).await {
+            Ok(Ok(status)) => status,
+            _ => {
+                eprintln!("Message storage failed");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
         }
+    };
+    if status == StatusCode::CREATED {
+        arrivals.send_replace(());
     }
+    status
 }
 
 fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
@@ -415,6 +422,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let challenge_secret = proof_secret.clone();
     let archive = Archive {
+        arrivals: tokio::sync::watch::channel(()).0,
         remote: remote.map(Arc::new),
         replica_reader: replica_reader.map(|s| format!("Bearer {s}").into()),
         db: Arc::new(Mutex::new(db)),

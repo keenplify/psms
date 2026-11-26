@@ -2,9 +2,9 @@
   if (window.top !== window || globalThis.psmsSuggestionInstalled) return;
   globalThis.psmsSuggestionInstalled=true;
   const api=globalThis.browser ?? chrome;
-  let field, host, timer, expiresTimer, generation=0;
+  let field, host, timer, retry, stream, expiresTimer, generation=0;
   function clear(){
-    generation++; clearInterval(timer); clearTimeout(expiresTimer);
+    generation++; clearInterval(timer); clearTimeout(retry); clearTimeout(expiresTimer); stream?.disconnect(); stream=null;
     host?.remove(); host=null; field=null;
   }
   function eligible(el){
@@ -48,15 +48,41 @@
     clear();
     if(!eligible(el)||document.visibilityState!=="visible")return;
     field=el; const current=generation;
+    let fetching=false, dirty=false;
     async function check(){
+      if (current !== generation) return;
+      if (fetching) { dirty=true; return; }
       if(!el.isConnected || !eligible(el) || document.visibilityState!=="visible"){if(current===generation)clear();return}
       try{
+        fetching=true;
         const data=await api.runtime.sendMessage({type:"psms:suggest"});
         if(current!==generation)return;
         if(data && data.expires>Date.now())display(el,data);else{host?.remove();host=null}
-      }catch{if(current===generation)clear()}
+      }catch{if(current===generation)clear()} finally {fetching=false; if(dirty && current===generation){dirty=false;void check()}}
     }
-    check(); timer=setInterval(check,4000);
+    function poll() {
+      clearInterval(timer);
+      timer=setInterval(check,4000);
+    }
+    function subscribe() {
+      if(current!==generation)return;
+      try {
+        const port=api.runtime.connect({name:"psms:arrivals"});
+        stream=port;
+        port.onMessage.addListener(event=>{
+          if(current!==generation)return;
+          if(event.type==="ready")clearInterval(timer);
+          if(event.type==="ready" || event.type==="arrival")void check();
+        });
+        port.onDisconnect.addListener(()=>{
+          void api.runtime.lastError;
+          if(current!==generation)return;
+          stream=null; poll(); void check();
+          retry=setTimeout(subscribe,60000);
+        });
+      } catch { if(current===generation)retry=setTimeout(subscribe,60000); }
+    }
+    void check(); poll(); subscribe();
   }
   document.addEventListener("focusin",e=>focus(e.target),true);
   document.addEventListener("focusout",()=>setTimeout(()=>{if(field && document.activeElement!==field && document.activeElement!==host)clear()},0),true);
