@@ -11,6 +11,8 @@
 
 ## Mac capture handoff — iPhone and iPad
 
+The first simulator frames show the live hosted sign-in screen in Safari. [iPhone portrait](docs/screenshots/mobile/iPhone-sign-in.png) · [iPad portrait](docs/screenshots/mobile/iPad-sign-in.png).
+
 The Mac is the publisher’s capture workstation. The reader follows Safari, Files and Shortcuts on their own mobile device. Capture one full set on iPhone and another on iPad. Use a disposable account and synthetic messages throughout.
 
 ### Launch the walkthrough
