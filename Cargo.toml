@@ -1,6 +1,6 @@
 [package]
 name = "papamo-sms"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 license = "MIT"
 
@@ -39,6 +39,8 @@ rbs = "4"
 ngrok = { version = "0.19.1", default-features = false, features = ["ring"] }
 hostname = "0.3"
 dialoguer = "0.12"
+bip39 = "3.0.0"
+pdf-writer = "0.15.0"
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"

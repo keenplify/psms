@@ -84,3 +84,47 @@ api.runtime.onConnect.addListener(port => {
     port.disconnect();
   });
 });
+
+const hostedInbox = "https://www.papamo.dev/sms/inbox";
+const hostedApi = "https://na.sms.papamo.dev/free/v1";
+api.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg?.type !== "psms:signin" || sender.url !== api.runtime.getURL("popup.html")) return false;
+  (async () => {
+    const tab = await api.tabs.create({url:"about:blank"});
+    await api.storage.session.set({signin:{id:tab.id, expires:Date.now()+600000}});
+    await api.tabs.update(tab.id,{url:hostedInbox});
+  })().then(()=>reply(true),()=>reply(false));
+  return true;
+});
+const connecting = new Set();
+api.tabs.onUpdated.addListener(async (id, change, tab) => {
+  if(change.status !== "complete" || tab.url?.split(/[?#]/)[0] !== hostedInbox || connecting.has(id))return;
+  const {signin} = await api.storage.session.get("signin");
+  if(signin?.id !== id || signin.expires < Date.now())return;
+  connecting.add(id);
+  try {
+    const [response] = await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:async (deadline)=>{
+      if(location.origin!=="https://www.papamo.dev" || location.pathname!=="/sms/inbox")return;
+      const status=document.getElementById("status");
+      while(Date.now()<deadline) {
+        const result=await window.connectPapamoAutofill?.();
+        if(result?.state==="connected")return result;
+        if(result?.state==="needs-key" && status)status.textContent="Restore your archive from its backup, or complete phone setup to connect autofill.";
+        await new Promise(resolve=>setTimeout(resolve,1200));
+      }
+    },args:[signin.expires]});
+    const result=response?.result;
+    const pending=(await api.storage.session.get("signin")).signin;
+    if(pending?.id!==id || pending.expires!==signin.expires || pending.expires<Date.now() || !/^[0-9a-f]{64}$/.test(result?.token??"") || result?.key?.length!==32)return;
+    await api.storage.local.set({server:hostedApi});
+    await api.storage.session.set({pair:{key:result.key,token:result.token,server:hostedApi,username:result.username}});
+    await api.storage.session.remove("signin");
+    await api.scripting.executeScript({target:{tabId:id},func:()=>{
+      if(location.origin==="https://www.papamo.dev" && location.pathname==="/sms/inbox"){
+        const status=document.getElementById("status");
+        if(status)status.textContent="Autofill connected. Open the extension on a sign-in site to enable it.";
+      }
+    }});
+  } catch { /* A closed or navigated tab cancels the handoff. */ }
+  finally { connecting.delete(id); }
+});

@@ -8,6 +8,7 @@ function showMode(mode){
   el("mode").value=mode;
   el("server-label").hidden=mode==="hosted";
   el("server-label").style.display=mode==="hosted"?"none":"grid";
+  for(const item of document.querySelectorAll(".manual"))item.hidden=mode==="hosted";
   el("account").hidden=mode!=="hosted";
   el("server").value=mode==="hosted"?hosted:customServer;
 }
@@ -15,7 +16,7 @@ el("mode").onchange=()=>{
   if(el("mode").value==="hosted")customServer=el("server").value;
   el("token").value=el("key").value="";
   showMode(el("mode").value);
-  status("Enter the autofill token and recovery key for this archive.");
+  status(el("mode").value==="hosted"?"Use your Papamo account.":"Enter your server credentials.");
 };
 let currentTab;
 let enabledSites=[];
@@ -25,19 +26,41 @@ async function detect(){
   const [tab]=await api.tabs.query({active:true,currentWindow:true});
   currentTab=tab; enabledSites=sites;
   if(tab?.url && sites.includes(new URL(tab.url).origin))el("enable").textContent="Disable on this site";
-  if((await api.storage.session.get("pair")).pair){status("Connected for this browser session.");return}
+  const {pair}=await api.storage.session.get("pair");
+  if(pair){el("account").textContent="Reconnect to Papamo";status(pair.username ? "Connected as "+pair.username+"." : "Connected for this browser session.");return}
   try{
     const r=await fetch(local+"/.well-known/psms",{redirect:"error",signal:AbortSignal.timeout(1200)});
-    if((await r.json()).service==="psms" && !server){showMode("custom");status("Local pSMS detected. Get a Browser autofill token in Settings.");return}
+    if((await r.json()).service==="psms" && !server){status("A local archive is also available under Local or custom server.");return}
   }catch{}
-  status("Enter the address shown by pSMS and unlock this session.");
+  status(el("mode").value==="hosted"?"Sign in to use your hosted inbox.":"Enter the address shown by pSMS.");
+}
+el("account").onclick=async()=>{
+  try {
+    if(!await api.permissions.request({origins:["https://www.papamo.dev/*","https://na.sms.papamo.dev/*"]}))return;
+    if(!await api.runtime.sendMessage({type:"psms:signin"}))throw Error();
+    window.close();
+  } catch { status("Could not start sign-in. Try again."); }
+};
+async function customKey(input) {
+  const value=input.trim();
+  if(value.length===32 && !/\s/.test(value))return value;
+  const words=value.toLowerCase().split(/\s+/);
+  if(words.length!==12)return null;
+  const list=await (await fetch(api.runtime.getURL("english.json"))).json();
+  const indexes=words.map(word=>list.indexOf(word));
+  if(indexes.includes(-1))return null;
+  const bits=indexes.map(i=>i.toString(2).padStart(11,"0")).join("");
+  const entropy=Uint8Array.from(bits.slice(0,128).match(/.{8}/g),b=>parseInt(b,2));
+  const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",entropy));
+  if(parseInt(bits.slice(128),2)!==(digest[0]>>4))return null;
+  return Array.from(entropy,b=>b.toString(16).padStart(2,"0")).join("");
 }
 el("connect").onclick=async()=>{
   try{
     const u=new URL(el("mode").value==="hosted"?hosted:el("server").value);
     if(u.username||u.password||u.search||u.hash||!(u.protocol==="https:" || (u.protocol==="http:" && u.hostname==="127.0.0.1")))throw Error();
-    const key=el("key").value,token=el("token").value.trim();
-    if(key.length!==32 || !/^[a-f\d]{64}$/i.test(token)){status("Enter your 32-character recovery key and Browser autofill token.");return}
+    const key=await customKey(el("key").value),token=el("token").value.trim();
+    if(!key || !/^[a-f\d]{64}$/i.test(token)){status("Enter your 12-word backup or original key and a browser autofill token.");return}
     if(!await api.permissions.request({origins:[u.protocol+"//"+u.hostname+"/*"]}))return;
     const server=u.href.replace(/\/+$/,"");
     const r=await fetch(server+"/otp/recent",{headers:{Authorization:"Bearer "+token},redirect:"error",credentials:"omit",cache:"no-store",signal:AbortSignal.timeout(5000)});
@@ -46,7 +69,7 @@ el("connect").onclick=async()=>{
     el("key").value=el("token").value="";status("Connected. Enable autofill on the sign-in site.");
   }catch{status("Could not connect. Check the server address and try again.")}
 };
-el("lock").onclick=async()=>{await api.storage.session.remove("pair");status("Locked.")};
+el("lock").onclick=async()=>{await api.storage.session.remove(["pair","signin"]);status("Locked.")};
 el("enable").onclick=async()=>{
   try{
     const tab=currentTab;

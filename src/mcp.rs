@@ -257,10 +257,9 @@ pub async fn run(
     let key = key_file
         .map(std::fs::read_to_string)
         .transpose()?
-        .map(|s| s.trim_end().to_owned());
-    if key.as_ref().is_some_and(|k| k.len() != 32) {
-        return Err("expected a 32-character recovery key".into());
-    }
+        .as_deref()
+        .map(crate::recovery::key_from_backup)
+        .transpose()?;
     let server = Inbox {
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())

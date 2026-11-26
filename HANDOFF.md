@@ -7,26 +7,45 @@
 3. Choose a reachable HTTPS origin. Forward an existing HTTPS reverse proxy to the reported local address, start a named Cloudflare tunnel, or run `psms tunnel quick` in a second terminal with cloudflared installed. A temporary URL changes when the connector restarts. For another provider point its outbound connector at the same HTTP origin. Verify that it passes the Authorization header and POST body. CGNAT permits this outbound setup.
 4. Run `psms onboard --endpoint https://YOUR-HOST/v1/messages --output PRIVATE-NEW-FOLDER`. Keep the recovery key on a trusted device. Sign the private shortcut on macOS and import it on the phone. This step still requires Apple signing before distribution. For a second phone or an OpenPGP shortcut, match the encrypted wire format in README. The native viewer decrypts an Actions message with that message's archive key.
 5. On an unlocked test phone, receive “pSMS test one”. Refresh the dashboard, enter the recovery key and select the conversation. Repeat while locked, checking for a second row before unlocking. Mac-to-iPhone library sync was observed by the owner. Background delivery, signed distribution and actual iPGMail output need device testing.
-6. Verify the open/close/exit menu experience manually on the Windows desktop. Verify Linux and both Mac architectures from CI artifacts. No public infrastructure or cloud account is provisioned by this checkout. The background process runs for the current session; boot-time service installation is future work.
+6. Verify the open/close/exit menu experience manually on the Windows desktop. Verify Linux and Apple Silicon macOS from CI artifacts. No public infrastructure or cloud account is provisioned by this checkout. The background process runs for the current session; boot-time service installation is future work.
 
-## Step-by-step screenshots to collect
+## Mac capture handoff — iPhone and iPad
 
-Use a dedicated test contact and messages. Capture just the app and record the exact iOS version, language, encryption app version and device. Hide keys, tokens, private shortcut links, real phone numbers, contact photos and notifications. Capture each step as a separate image.
+The Mac is the publisher’s capture workstation. The reader follows Safari, Files and Shortcuts on their own mobile device. Capture one full set on iPhone and another on iPad. Use a disposable account and synthetic messages throughout.
 
-| Filename suffix | iOS 27 flow | Earlier supported iOS flow to validate |
-| --- | --- | --- |
-| 01-provider | Encryption app installed on the receiving phone | Same |
-| 02-add | Preview of signed pSMS shortcut, **Add Shortcut** visible | Preview of an earlier-version-compatible upload shortcut |
-| 03-library | pSMS in Library after import or Mac sync | Uploaded shortcut in Library |
-| 04-trigger | Open the shortcut editor, show its **Message** trigger | **Automation → New Automation → Message** |
-| 05-filter | Show the space/phrase or selected test sender | Select the same test criterion |
-| 06-enable | Show the enabled automation on the phone | Select **Run Immediately** and connect the upload shortcut |
-| 07-permission | First network permission prompt for the test host | Same, if displayed |
-| 08-first-upload | Desktop dashboard after the unlocked test | Same |
-| 09-locked-upload | Desktop dashboard with a second timestamp while phone remains locked | Same, if supported |
-| 10-decrypt | Local decryption of synthetic test content | Same |
+### Launch the walkthrough
 
-Keep originals by version, e.g. `ios-27.1/04-trigger.png`. For releases with different screens, capture the actual sequence and note the difference. Docs home in the companion repository is `content/docs/papamo-sms.mdx`.
+From a Mac checkout, install an iOS simulator runtime in Xcode, then run one of these commands:
+
+```sh
+bash scripts/mac-onboarding.sh iphone
+bash scripts/mac-onboarding.sh ipad
+```
+
+The launcher signs the credential-free **pSMS Capture** template, opens it in Mac Shortcuts, boots an available simulator of the requested family and opens the hosted inbox in Safari. It prints the device-specific screenshot command. To pick a runtime explicitly, pass its UDID as the second argument after listing devices with `xcrun simctl list devices available`. Use `mac` for the Shortcuts import alone or `sign-only` for a signed distribution file. macOS or Apple may ask for approval. Enable the import on screen.
+
+### Publish the reusable shortcut once
+
+Open the signed **pSMS Capture** on the Mac. Inspect the single setup import question and confirm the default is empty or `{}`. Use the untouched template to create an iCloud sharing link, or distribute the public signed file from a trusted HTTPS page. Validate the published link in Safari on a device with a different Apple account. Paste private setup only into a recipient’s own copy after import. Personal setup includes an upload credential and encryption key. Keep personalized shortcuts and pSMS.json private. Record the verified public link in the mobile setup guide before telling users to use it. Apple documents [sharing a shortcut](https://support.apple.com/guide/shortcuts/apdf01f8c054/ios) and [import questions](https://support.apple.com/guide/shortcuts/apdf330fd3a0/ios).
+
+### Phone-only steps to photograph
+
+| File | User action and frame |
+| --- | --- |
+| 01-sign-in | Open papamo.dev/sms/inbox in Safari. Sign in with the demo account. |
+| 02-first-run | Show the empty inbox and tap **Set up my iPhone** or **Connect a phone**. |
+| 03-backup | Create pairing files. Save **pSMS-Recovery-Kit.pdf** to Files or write the numbered words on paper. Show the download button or a clearly marked public sample. |
+| 04-private-setup | Use **Copy private phone setup** in the pairing panel. Self-hosted users can copy the contents of their private pSMS.json from their operator. Keep the clipboard contents off camera. |
+| 05-install | Install Actions on the receiving device. Open the public pSMS Capture link in mobile Safari, start import, paste setup into the single import question and finish adding the shortcut. Capture the question while it is empty. |
+| 06-trigger | On the receiving iPhone open Shortcuts → Automation. Enable the imported Message trigger if present. Otherwise create a personal Message automation, select a test sender or supported filter, and pass the incoming Message to **Run Shortcut → pSMS Capture**. |
+| 07-enable | Select **Run Immediately** where available. Capture the actual enabled state and any first-run network permission for the test archive. |
+| 08-delivery | Receive an ordinary SMS containing “pSMS test one” on a physical iPhone. Verify the synthetic sender and timestamp in the browser inbox. Repeat with the receiving iPhone locked and check from a second signed-in device before unlocking. |
+| 09-restore | In a fresh test browser profile, sign in and show the empty recovery field. Enter the 12 demo words privately, then capture the restored synthetic conversation. |
+
+On **iPad**, cover portrait and landscape Safari, Files download, account menu, recovery and reading a conversation from the paired iPhone. Capture Split View if available. If demonstrating Messages forwarded from an iPhone, record the exact device settings and separately verify whether its personal automation fires. Claim iPad capture only for a configuration tested end to end. Apple describes [forwarding iPhone texts to other devices](https://support.apple.com/en-us/102545).
+
+Store captures under `ios-<version>/iphone/`, `ipados-<version>/portrait/` and `ipados-<version>/landscape/`. Record device, runtime, Actions version, locale, and simulator versus hardware. Capture simulator frames with `xcrun simctl io <UDID> screenshot <file>.png`. Check Shortcuts, Actions and trigger availability in each runtime; capture missing steps on physical hardware. Use a real incoming SMS for delivery evidence. Simulator APNs injection tests a different trigger. Keep recovery phrases, account passwords, raw phone configuration, real messages, and private share links out of published screenshots.
+
 
 ## Product scope
 

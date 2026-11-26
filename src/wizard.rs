@@ -177,7 +177,7 @@ pub async fn run(path: &Path, server: &ServerOptions, opts: Options) -> Result<(
     if opts.wait.is_some() {
         initial = Some(crate::manage::newest(path, server).await?);
     }
-    onboard::prepare(&url, &folder, &token)?;
+    onboard::prepare(&url, &folder, &token, None)?;
     if let (Some(seconds), Some(before)) = (opts.wait, initial) {
         let wait = async {
             loop {

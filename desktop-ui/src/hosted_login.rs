@@ -208,7 +208,7 @@ fn client() -> Result<reqwest::Client, &'static str> {
         .map_err(|_| "Cannot connect to Papamo.")
 }
 
-pub fn pair(token: &str, folder: &std::path::Path) -> Result<(), &'static str> {
+pub fn pair(token: &str, folder: &std::path::Path, username: &str) -> Result<(), &'static str> {
     runtime()?.block_on(async {
         let payload: serde_json::Value = client()?
             .post("https://na.sms.papamo.dev/free/v1/pair")
@@ -224,10 +224,15 @@ pub fn pair(token: &str, folder: &std::path::Path) -> Result<(), &'static str> {
             .as_str()
             .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
             .ok_or("Invalid upload credential.")?;
-        crate::onboard::prepare("https://na.sms.papamo.dev/free/v1/messages", folder, upload)
-            .map_err(
-                |_| "Could not save the private shortcut. Check your archive folder permissions.",
-            )?;
+        crate::onboard::prepare(
+            "https://na.sms.papamo.dev/free/v1/messages",
+            folder,
+            upload,
+            Some(username),
+        )
+        .map_err(
+            |_| "Could not save the private shortcut. Check your archive folder permissions.",
+        )?;
         std::fs::write(folder.join("papamo-hosted"), "1")
             .map_err(|_| "Could not save the pairing details.")
     })

@@ -280,6 +280,7 @@ impl Dashboard {
             return;
         };
         let token = account.token.clone();
+        let username = account.username.clone();
         let folder = self
             .path
             .with_file_name(format!("pSMS-pairing-{}", uuid::Uuid::new_v4()));
@@ -289,7 +290,9 @@ impl Dashboard {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hosted_login::pair(&token, &folder).map(|_| folder) })
+                .spawn(
+                    async move { hosted_login::pair(&token, &folder, &username).map(|_| folder) },
+                )
                 .await;
             let _ = this.update(cx, |s, cx| {
                 s.form.busy = false;

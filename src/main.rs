@@ -1,3 +1,4 @@
+mod recovery;
 // Prefer the current spelling even when explicitly empty.
 #[macro_export]
 macro_rules! env_name {
@@ -191,17 +192,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut cli = cli::Cli::parse();
     if let Some(cli::Command::ContactId { key_file }) = &cli.command {
         let key = std::fs::read_to_string(key_file)?;
-        let key = key.trim_end_matches(['\r', '\n']);
-        if key.len() != 32 || !key.is_ascii() {
-            return Err("expected a 32-character shortcut recovery key".into());
-        }
+        let key = recovery::key_from_backup(&key)?;
         let mut sender = String::new();
         std::io::stdin().read_line(&mut sender)?;
         let sender = sender.trim_end_matches(['\r', '\n']);
         if sender.is_empty() {
             return Err("enter the exact sender ID or phone number".into());
         }
-        println!("{}", contact_id(sender, key));
+        println!("{}", contact_id(sender, &key));
         return Ok(());
     }
     let db_path = database_path(cli.options.database.take())?;

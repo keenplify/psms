@@ -1,0 +1,16 @@
+name: Sign public phone shortcut
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  sign:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/mac-onboarding.sh sign-only
+        env:
+          PSMS_CAPTURE_DIR: ${{ runner.temp }}/psms-capture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: psms-signed-mobile-template
+          path: ${{ runner.temp }}/psms-capture/pSMS-Capture.shortcut

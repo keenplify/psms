@@ -233,7 +233,12 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
         Action::Inbox { command } => match command {
             Inbox::Show { id, key_file } => {
                 let mut entry = api(path, opts, &format!("/messages/{id}"), None).await?;
-                let k = key_file.map(std::fs::read_to_string).transpose()?;
+                let k = key_file
+                    .map(std::fs::read_to_string)
+                    .transpose()?
+                    .as_deref()
+                    .map(crate::recovery::key_from_backup)
+                    .transpose()?;
                 unlock(&mut entry, k.as_deref().map(str::trim_end));
                 println!("{entry}");
             }
@@ -249,7 +254,12 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                     route.push_str(&format!("&cursor={n}"));
                 }
                 let mut page = api(path, opts, &route, None).await?;
-                let k = key_file.map(std::fs::read_to_string).transpose()?;
+                let k = key_file
+                    .map(std::fs::read_to_string)
+                    .transpose()?
+                    .as_deref()
+                    .map(crate::recovery::key_from_backup)
+                    .transpose()?;
                 let needle = search.map(|n| n.to_lowercase());
                 let rows = page["messages"]
                     .as_array_mut()

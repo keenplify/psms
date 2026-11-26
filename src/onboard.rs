@@ -2,7 +2,12 @@ use plist::Value;
 use std::{error::Error, fs, io::Cursor, path::Path};
 
 /// Build on the archive owner's machine. Neither the generated key nor the private workflow is logged.
-pub fn prepare(endpoint: &str, folder: &Path, token: &str) -> Result<(), Box<dyn Error>> {
+pub fn prepare(
+    endpoint: &str,
+    folder: &Path,
+    token: &str,
+    username: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     let uri = endpoint.parse::<axum::http::Uri>()?;
     if uri.scheme_str() != Some("https")
         || uri.host().is_none()
@@ -42,11 +47,62 @@ pub fn prepare(endpoint: &str, folder: &Path, token: &str) -> Result<(), Box<dyn
     #[cfg(not(unix))]
     dir.recursive(false);
     dir.create(folder)?;
+    fs::write(
+        folder.join("pSMS-Recovery-Kit.pdf"),
+        crate::recovery::printable(
+            &bytes,
+            uri.authority().ok_or("missing host")?.as_str(),
+            username,
+        ),
+    )?;
+    fs::write(
+        folder.join("pSMS.json"),
+        serde_json::to_vec(&serde_json::json!({"endpoint":endpoint,"token":token,"key":key}))?,
+    )?;
     workflow.to_file_binary(folder.join("pSMS_Encrypted.shortcut"))?;
     fs::write(folder.join("archive-recovery-key.txt"), format!("{key}\n"))?;
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("CI").is_none()
+        && std::env::var_os("SSH_CONNECTION").is_none()
+        && let Err(error) = open_mobile_template(folder)
+    {
+        eprintln!("Saved pairing files. Could not open the public template in Shortcuts: {error}");
+    }
     println!(
-        "Private shortcut and recovery key saved in {}. Keep the folder private. Sign the shortcut on a Mac, add it on the phone, then enable its Message automation.",
+        "Private shortcut, printable recovery kit and recovery key saved in {}. Keep the folder private. Import the shared pSMS Capture shortcut, paste the private phone setup from pSMS.json and enable the Message automation.",
         folder.display()
     );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_mobile_template(folder: &Path) -> std::io::Result<()> {
+    use std::process::Command;
+    let template = folder.join("pSMS-template.shortcut");
+    let signed = folder.join("pSMS-Capture.shortcut");
+    fs::write(
+        &template,
+        include_bytes!("../examples/pSMS-Capture.shortcut"),
+    )?;
+    if !Command::new("/usr/bin/shortcuts")
+        .args(["sign", "--mode", "anyone", "--input"])
+        .arg(&template)
+        .arg("--output")
+        .arg(&signed)
+        .status()?
+        .success()
+    {
+        return Err(std::io::Error::other("Apple Shortcuts signing failed"));
+    }
+    if !Command::new("/usr/bin/open")
+        .args(["-a", "Shortcuts"])
+        .arg(&signed)
+        .status()?
+        .success()
+    {
+        return Err(std::io::Error::other(
+            "Shortcuts could not open the signed template",
+        ));
+    }
     Ok(())
 }

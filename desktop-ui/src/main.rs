@@ -10,6 +10,8 @@ mod hook_store;
 mod hosted_login;
 #[path = "../../src/onboard.rs"]
 mod onboard;
+#[path = "../../src/recovery.rs"]
+mod recovery;
 mod setup;
 use archive::Thread;
 use gpui_kit::{
@@ -424,11 +426,12 @@ impl Dashboard {
     }
     fn unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.key.read(cx).value().to_string();
-        if key.len() != 32 {
-            self.notice = "Use the 32-character key from archive-recovery-key.txt.".into();
+        let Ok(key) = recovery::key_from_backup(&key) else {
+            self.notice =
+                "Enter the 12 words from your recovery kit or your original archive key.".into();
             cx.notify();
             return;
-        }
+        };
         let valid=self.db.query_row("SELECT body FROM messages WHERE sender='papamo:encrypted:v1' ORDER BY rowid DESC LIMIT 1",[],|r|r.get::<_,String>(0));
         if valid.is_ok()
             && !self
