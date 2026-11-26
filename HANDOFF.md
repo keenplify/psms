@@ -15,6 +15,21 @@ The first simulator frames show the live hosted sign-in screen in Safari. [iPhon
 
 The Mac is the publisher’s capture workstation. The reader follows Safari, Files and Shortcuts on their own mobile device. Capture one full set on iPhone and another on iPad. Use a disposable account and synthetic messages throughout.
 
+### First run of the pairing shortcut
+
+Adding the shortcut is not the last step. Open it once by hand so the system asks for its permissions. Approve **Always Allow** at the network prompt, otherwise background message runs stop at it. A run without an incoming message uploads one **pSMS setup** check message instead of a text. It confirms the upload credential and archive key end to end. Shortcuts built before this change uploaded an empty message instead. The inbox, desktop and MCP show those rows as the same setup check.
+
+| Step | Mac | iPhone | iPad |
+| --- | --- | --- | --- |
+| Open the downloaded file | Double-click `pSMS_Ready.shortcut` in Finder. | [Files → Downloads](docs/screenshots/setup/iphone/01-files.png) | [Files → Downloads](docs/screenshots/setup/ipad/01-files.png) |
+| Add it | [Add Shortcut](docs/screenshots/setup/mac/01-add-shortcut.png) | [Add Shortcut](docs/screenshots/setup/iphone/02-add-shortcut.png) | [Add Shortcut](docs/screenshots/setup/ipad/02-add-shortcut.png) |
+| Run it once | [Double-click the tile](docs/screenshots/setup/mac/02-library.png), then [press ▶](docs/screenshots/setup/mac/03-open-and-run.png) | [Tap the tile](docs/screenshots/setup/iphone/03-library.png) | [Tap the tile](docs/screenshots/setup/ipad/03-library.png) |
+| Allow the Actions app | [Allow](docs/screenshots/setup/mac/04-allow-actions.png) | Allow (physical device only) | Allow (physical device only) |
+| Allow the upload | [Always Allow](docs/screenshots/setup/mac/05-allow-network.png) | [Allow](docs/screenshots/setup/iphone/04-allow-connect.png) | [Allow](docs/screenshots/setup/ipad/04-allow-connect.png) |
+| Check the inbox | A **pSMS setup** conversation appears. | Same | Same |
+
+Captured on 27 Nov 2026. The Mac frames come from macOS Shortcuts with the Actions app installed. The iPhone 17 Pro and iPad Pro 11-inch (M5) frames come from iOS 26.2 simulators. All runs used the current template with a dummy upload credential and demo key, and the prompts were declined or rejected, so nothing was stored. Simulators cannot install the Actions app. Their capture copy therefore replaced **Encrypt** with **Base64 Encode**. On a physical iPhone or iPad, also expect the “run actions from Actions” prompt shown in the Mac frames. The demo shortcut is named `pSMS_Setup`; the file downloaded from the inbox is named `pSMS_Ready`.
+
 ### Launch the walkthrough
 
 From a Mac checkout, install an iOS simulator runtime in Xcode, then run one of these commands:
