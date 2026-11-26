@@ -111,8 +111,8 @@ impl Dashboard {
     }
     pub fn setup_view(&self, cx: &mut Context<Self>) -> Div {
         let steps = [
-            "Your archive",
-            "Connect a phone",
+            "Sign in",
+            "Choose storage",
             "Install shortcut",
             "Verify delivery",
         ];
@@ -164,27 +164,38 @@ impl Dashboard {
             .w_full()
             .gap_4()
             .child(self.caption(format!("Step {} of 4", self.step + 1)));
-        match self.step{
-    0=>card=card.child(self.heading("Your private message archive")).child("Your phone encrypts incoming messages before sending them to the archive you choose.")
-        .child(div().child(button("start","Connect a phone").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(1,w,cx))))),
-    1=>card=card.child(self.heading("Connect a phone")).child(self.connection_view(cx)),
-    2=>{card=card.child(self.heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
+        match self.step {
+            0 => card = card.child(self.account_view(cx)),
+            1 => {
+                card = card
+                    .child(self.heading("Where should messages be stored?"))
+                    .child(self.database_view(cx))
+            }
+            2 => {
+                card=card.child(self.heading("Install the shortcut")).child("Your pairing folder contains the shortcut and a private recovery key. On a trusted Mac, open Terminal in that folder and sign the shortcut.")
         .child(div().h_flex().gap_2().child(button("files","Open pairing folder").on_click(cx.listener(|s,_,_,cx|{if let Some(p)=&s.folder{cx.open_with_system(p)}})))
         .child(button("command","Copy signing command").on_click(cx.listener(|s,_,_,cx|{cx.write_to_clipboard(ClipboardItem::new_string("shortcuts sign --mode anyone --input pSMS_Encrypted.shortcut --output pSMS_Ready.shortcut".into()));s.notice="Signing command copied.".into();cx.notify()}))))
         .child("Install Actions on the iPhone, import the signed shortcut, then enable a Message automation that passes its input to that shortcut.")
-        .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(3,w,cx)))));},
-    3 if self.folder.as_ref().is_some_and(|f| f.join("papamo-hosted").is_file()) => {
-        card=card.child(self.heading("Verify your hosted archive"))
+        .child(div().child(button("verify","Continue").primary().on_click(cx.listener(|s,_,w,cx|s.save_step(3,w,cx)))));
+            }
+            3 if self
+                .folder
+                .as_ref()
+                .is_some_and(|f| f.join("papamo-hosted").is_file()) =>
+            {
+                card=card.child(self.heading("Verify your hosted archive"))
             .child("Send a test message to your phone, then check that it reached your Papamo account.")
             .child(button("verify-hosted","Check hosted archive").disabled(self.form.busy).on_click(cx.listener(|s,_,w,cx|s.check_hosted(w,cx))));
-    }
-    _=>{let received=self.newest()>self.baseline;
-       card=card.child(self.heading(if received{"A message arrived"}else{"Try a test message"}))
+            }
+            _ => {
+                let received = self.newest() > self.baseline;
+                card=card.child(self.heading(if received{"A message arrived"}else{"Try a test message"}))
         .child(if received{"This archive received an encrypted upload since pairing. Use your recovery key to unlock its contents in the inbox."}else{"Have another phone send you a text matching your automation. This screen checks for new encrypted uploads automatically."})
         .child(div().child(button("done",if received{"Open inbox"}else{"Check for a message"}).primary().on_click(cx.listener(|s,_,_,cx|{
            if s.newest()>s.baseline{s.finish(cx)}else{s.notice="Waiting for a new encrypted upload. Check the endpoint and the phone automation.".into();cx.notify()}
-        }))));}
-    }
+        }))));
+            }
+        }
         let footer = div().h_flex().child(
             button("later", "Set up later")
                 .disabled(self.form.busy)

@@ -680,6 +680,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [],
         |r| r.get::<_, Option<bool>>(0),
     )?;
+    // Hosted credentials last for this app session. Resume at the account choice
+    // if storage selection was interrupted, including setups from older releases.
+    let step = if step == 1 { 0 } else { step };
     let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

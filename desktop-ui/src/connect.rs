@@ -148,7 +148,7 @@ impl Dashboard {
         })
         .detach();
     }
-    pub fn connection_view(&self, cx: &mut Context<Self>) -> Div {
+    pub fn account_view(&self, cx: &mut Context<Self>) -> Div {
         let card = div()
             .v_flex()
             .gap_3()
@@ -185,40 +185,51 @@ impl Dashboard {
                 .child(self.caption("Sign in through your browser to return to pSMS."))
         };
         let signed = self.form.account.is_some();
-        let mut choices = div().v_flex().gap_3().child(hosted);
-        if signed {
+        div().v_flex().gap_3().child(hosted).child(
+            button(
+                "choose-storage",
+                if signed {
+                    "Continue to storage"
+                } else {
+                    "Set up manually with a tunnel or domain"
+                },
+            )
+            .disabled(self.form.signing_in || self.form.busy)
+            .on_click(cx.listener(|s, _, w, cx| {
+                s.form.manual_open = s.form.account.is_none();
+                s.save_step(1, w, cx);
+            })),
+        )
+    }
+
+    pub fn database_view(&self, cx: &mut Context<Self>) -> Div {
+        let mut choices = div().v_flex().gap_3();
+        if self.form.account.is_some() {
             choices = choices
-                .child(self.heading("Where should messages be stored?"))
                 .child(
                     button("hosted-db", "Use my Papamo hosted database")
                         .primary()
                         .disabled(self.form.busy)
                         .on_click(cx.listener(|s, _, _, cx| s.pair_hosted(cx))),
+                )
+                .child(
+                    button(
+                        "manual-connection",
+                        if self.form.manual_open {
+                            "Hide manual setup"
+                        } else {
+                            "Use my own database"
+                        },
+                    )
+                    .icon(IconName::Network)
+                    .disabled(self.form.busy)
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        s.form.manual_open = !s.form.manual_open;
+                        cx.notify();
+                    })),
                 );
         }
-        choices = choices.child(
-            div().child(
-                button(
-                    "manual-connection",
-                    if self.form.manual_open {
-                        "Hide manual setup"
-                    } else {
-                        if signed {
-                            "Use my own database"
-                        } else {
-                            "Set up manually with a tunnel or domain"
-                        }
-                    },
-                )
-                .icon(IconName::Network)
-                .disabled(self.form.busy)
-                .on_click(cx.listener(|s, _, _, cx| {
-                    s.form.manual_open = !s.form.manual_open;
-                    cx.notify();
-                })),
-            ),
-        );
-        if self.form.manual_open {
+        if self.form.account.is_none() || self.form.manual_open {
             choices = choices.child(self.storage_view(cx));
             if self.external || self.storage_engine.is_none() {
                 choices = choices.child(self.manual_connection_view(cx));
@@ -226,7 +237,6 @@ impl Dashboard {
         }
         choices
     }
-
     fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (attempt, url) = match hosted_login::Attempt::start() {
             Ok(v) => v,
@@ -310,7 +320,7 @@ impl Dashboard {
 
     pub fn check_hosted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(account) = &self.form.account else {
-            self.save_step(1, window, cx);
+            self.save_step(0, window, cx);
             self.notice =
                 "Sign in to the account that owns this shortcut, then select Verify delivery."
                     .into();
