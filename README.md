@@ -178,7 +178,7 @@ Singapore checks the authoritative system_admin assignments every minute and rep
 
 ## Software updates
 
-Starting with 0.1.9, the desktop checks GitHub Releases at startup. When a newer stable version is available, it downloads and verifies the CLI and desktop app together. Choose **Restart to update** to activate the downloaded version. On the command line, use `psms update --check` to check, or `psms update` to install. Users on 0.1.8 or earlier need to install an updater-enabled release once.
+The desktop checks GitHub Releases at startup and hourly while open. Settings → Software updates shows the running version, last check, status, and a **Check for updates** button. A newer stable release is downloaded in the background and signature-verified. Choose **Restart to update** to switch immediately, or close and reopen pSMS to activate the staged release offline. On the command line, use `psms update --check` to check, or `psms update` to install. Users on 0.1.8 or earlier need to install an updater-enabled release once.
 
 Updates are per OS user and platform. The original launcher selects the active version from the user's local pSMS data directory. It switches versions only after both binaries match the Ed25519-signed manifest. An elevated process uses the installed system version. The updater keeps the archive and credentials in their existing locations.
 

@@ -145,7 +145,49 @@ fn digest(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", h.finalize()))
 }
+fn write_version(root: &Path, name: &str, version: &Version) -> Result<()> {
+    let mut file = tempfile::NamedTempFile::new_in(root)?;
+    write!(file, "{version}")?;
+    file.as_file().sync_all()?;
+    file.persist(root.join(name))?;
+    Ok(())
+}
+
+// Before opening a window, activate the already verified download offline.
+// dispatch() then forwards the original desktop/settings arguments to the new CLI.
+pub async fn activate_prepared(db: &Path, server: &crate::cli::ServerOptions) -> Result<()> {
+    let Ok(root) = root() else { return Ok(()) };
+    let raw = match fs::read_to_string(root.join("pending")) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let version = stable(raw.trim())?;
+    if version > stable(CURRENT)? {
+        apply(
+            Options {
+                check: false,
+                prepare: false,
+                restart: Some(version.to_string()),
+            },
+            db,
+            server,
+            false,
+        )
+        .await?;
+        dispatch()?;
+    }
+    Ok(())
+}
 pub async fn run(opts: Options, db: &Path, server: &crate::cli::ServerOptions) -> Result<()> {
+    apply(opts, db, server, true).await
+}
+async fn apply(
+    opts: Options,
+    db: &Path,
+    server: &crate::cli::ServerOptions,
+    reopen: bool,
+) -> Result<()> {
     let root = root()?;
     fs::create_dir_all(&root)?;
     let lock = fs::OpenOptions::new()
@@ -235,6 +277,7 @@ pub async fn run(opts: Options, db: &Path, server: &crate::cli::ServerOptions) -
         fs::rename(temp.path(), &target)?;
     }
     if opts.prepare {
+        write_version(&root, "pending", &version)?;
         println!("{version}");
         return Ok(());
     }
@@ -251,12 +294,9 @@ pub async fn run(opts: Options, db: &Path, server: &crate::cli::ServerOptions) -
         }
         return Err(e.into());
     }
-    if opts.restart.is_some() || running {
-        let cmd = if opts.restart.is_some() {
-            "desktop"
-        } else {
-            "init"
-        };
+    let restart_window = reopen && opts.restart.is_some();
+    if restart_window || running {
+        let cmd = if restart_window { "desktop" } else { "init" };
         let status = Command::new(target.join(executable("psms")))
             .arg("--database")
             .arg(db)
@@ -274,6 +314,20 @@ pub async fn run(opts: Options, db: &Path, server: &crate::cli::ServerOptions) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparing_an_update_does_not_switch_a_running_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let old = stable("0.1.14").unwrap();
+        let new = stable("0.1.16").unwrap();
+        write_version(root.path(), "active", &old).unwrap();
+        write_version(root.path(), "pending", &stable("0.1.15").unwrap()).unwrap();
+        write_version(root.path(), "pending", &new).unwrap();
+        assert_eq!(active(root.path()).unwrap(), Some(old));
+        assert_eq!(
+            fs::read_to_string(root.path().join("pending")).unwrap(),
+            new.to_string()
+        );
+    }
     #[test]
     fn rejects_invalid_release_and_signature() {
         assert!(stable("../1.0.0").is_err());

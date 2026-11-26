@@ -253,6 +253,22 @@ impl Dashboard {
         cx.notify()
     }
     pub fn settings_view(&self, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let updates = div()
+            .v_flex()
+            .gap_3()
+            .min_w_0()
+            .child(self.heading("Software updates"))
+            .child(self.caption(concat!("Installed version ", env!("CARGO_PKG_VERSION"))))
+            .child(self.update_status.clone())
+            .child(self.caption(match &self.checked_at {
+                Some(time) => format!("Last checked {time} · Checks hourly"),
+                None => "Checks at startup and hourly".to_owned(),
+            }))
+            .child(
+                button("check-updates", "Check for updates")
+                    .disabled(self.checking || self.updating)
+                    .on_click(cx.listener(|s, _, _, cx| s.check_updates(cx))),
+            );
         let mut card = div()
             .v_flex()
             .gap_3()
@@ -399,7 +415,7 @@ impl Dashboard {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p_6()
-                    .child(columns),
+                    .child(div().v_flex().gap_5().child(updates).child(columns)),
             )
     }
 }

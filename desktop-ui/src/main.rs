@@ -36,6 +36,9 @@ enum Screen {
 struct Dashboard {
     update: Option<String>,
     updating: bool,
+    checking: bool,
+    update_status: String,
+    checked_at: Option<String>,
     db: Connection,
     path: PathBuf,
     external: bool,
@@ -72,7 +75,7 @@ struct Dashboard {
 fn button(id: &'static str, label: &'static str) -> Button {
     let b = Button::new(id).label(label);
     let icon = match id {
-        "refresh" => IconName::RefreshCw,
+        "refresh" | "check-updates" => IconName::RefreshCw,
         "disconnect" => IconName::Ban,
         "config" => IconName::Settings,
         "prev" | "back" => IconName::ChevronLeft,
@@ -105,6 +108,57 @@ fn button(id: &'static str, label: &'static str) -> Button {
     b.icon(icon)
 }
 impl Dashboard {
+    fn check_updates(&mut self, cx: &mut Context<Self>) {
+        if self.checking || self.updating {
+            return;
+        }
+        self.checking = true;
+        self.update_status = "Checking for updates…".into();
+        let path = self.path.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let out = setup::cli(&path)
+                        .and_then(|mut cmd| cmd.args(["update", "--prepare"]).output())
+                        .map_err(|e| e.to_string())?;
+                    if !out.status.success() {
+                        return Err(String::from_utf8_lossy(&out.stderr)
+                            .trim()
+                            .trim_start_matches("Error: ")
+                            .to_string());
+                    }
+                    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.checking = false;
+                s.checked_at =
+                    s.db.query_row(
+                        "SELECT strftime('%Y-%m-%d %H:%M','now','localtime')",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                match result {
+                    Ok(v) if v.is_empty() => {
+                        s.update = None;
+                        s.update_status = "You’re up to date.".into();
+                    }
+                    Ok(v) => {
+                        s.update_status = format!(
+                            "Version {v} is ready. Restart now or reopen pSMS to apply it."
+                        );
+                        s.update = Some(v);
+                    }
+                    Err(e) => s.update_status = format!("Update check failed. {e}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
     fn color(&self, light: u32) -> Rgba {
         let dark = match light {
             INK => 0xf3f4f7,
@@ -754,16 +808,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         )
                         .detach();
-                        let update_path=path.clone();
                         cx.spawn(async move |this,cx|{
-                            let version=cx.background_executor().spawn(async move {
-                                let result=setup::cli(&update_path).ok()?.args(["update","--prepare"]).output().ok()?;
-                                if !result.status.success(){return None}
-                                let v=String::from_utf8(result.stdout).ok()?.trim().to_string();
-                                (!v.is_empty()).then_some(v)
-                            }).await;
-                            let _=this.update(cx,|s,cx|{s.update=version;cx.notify()});
-                        }).detach();                        cx.spawn(async move |this, cx| {
+                            loop {
+                                if this.update(cx,|s,cx|s.check_updates(cx)).is_err(){break}
+                                cx.background_executor().timer(Duration::from_secs(3600)).await;
+                            }
+                        }).detach();
+                        cx.spawn(async move |this, cx| {
                             loop {
                                 let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
                                 if let Some((path,page,starred))=params {
@@ -811,7 +862,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .detach();
                         let storage_file=cx.new(|cx|InputState::new(window,cx).placeholder("Path to private connection file"));
                         let form=connect::Form::new(&db,&endpoint,window,cx);
-                        let mut s = Dashboard {form, update:None, updating:false,
+                        let mut s = Dashboard {form, update:None, updating:false, checking:false, update_status:"Waiting to check.".into(), checked_at:None,
                             storage_engine:None,storage_file,migrating:false,
                             db,
                             external, external_page:None, external_newest:0,

@@ -317,6 +317,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         Some(cli::Command::Desktop) | Some(cli::Command::Settings) => {
+            if let Err(e) = updater::activate_prepared(&db_path, &cli.options).await {
+                eprintln!("Could not activate the pending update: {e}");
+            }
             daemon::init(&db_path, &cli.options)?;
             native::launch(
                 &db_path,
