@@ -2,7 +2,7 @@
   "redirects": [
     {
       "source": "/:path*",
-      "destination": "https://www.papamo.dev/login",
+      "destination": "https://www.papamo.dev/sms/inbox",
       "permanent": false
     }
   ]
