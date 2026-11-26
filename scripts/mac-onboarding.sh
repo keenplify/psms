@@ -9,12 +9,14 @@ out="${PSMS_CAPTURE_DIR:-$HOME/Downloads/pSMS-capture}"
 mkdir -p "$out"
 stage="$(mktemp -d)"
 trap 'rm -f "$stage/pSMS-Capture.shortcut"; rmdir "$stage"' EXIT
+if [[ "${PSMS_SIMULATOR_WEB_ONLY:-0}" != 1 ]]; then
 /usr/bin/shortcuts sign --mode anyone --input "$root/examples/pSMS-Capture.shortcut" --output "$stage/pSMS-Capture.shortcut"
 cp "$stage/pSMS-Capture.shortcut" "$out/pSMS-Capture.shortcut"
 echo "Signed public template: $out/pSMS-Capture.shortcut"
 [[ "$mode" != sign-only ]] || exit 0
 /usr/bin/open -a Shortcuts "$out/pSMS-Capture.shortcut"
-[[ "$mode" != mac ]] || exit 0
+fi
+[[ "$mode" != mac && "$mode" != sign-only ]] || exit 0
 device="${2:-}"
 if [[ -z "$device" ]]; then
   device="$(xcrun simctl list devices available -j | /usr/bin/python3 -c 'import json,sys

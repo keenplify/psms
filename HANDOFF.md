@@ -22,7 +22,7 @@ bash scripts/mac-onboarding.sh iphone
 bash scripts/mac-onboarding.sh ipad
 ```
 
-The launcher signs the credential-free **pSMS Capture** template, opens it in Mac Shortcuts, boots an available simulator of the requested family and opens the hosted inbox in Safari. It prints the device-specific screenshot command. To pick a runtime explicitly, pass its UDID as the second argument after listing devices with `xcrun simctl list devices available`. Use `mac` for the Shortcuts import alone or `sign-only` for a signed distribution file. macOS or Apple may ask for approval. Enable the import on screen.
+The launcher signs the credential-free **pSMS Capture** template, opens it in Mac Shortcuts, boots an available simulator of the requested family and opens the hosted inbox in Safari. It prints the device-specific screenshot command. To pick a runtime explicitly, pass its UDID as the second argument after listing devices with `xcrun simctl list devices available`. Use `mac` for the Shortcuts import alone or `sign-only` for a signed distribution file. macOS or Apple may ask for approval. Enable the import on screen. For Safari-only captures without iCloud, prefix the command with `PSMS_SIMULATOR_WEB_ONLY=1`. On iPad, use Simulator’s Rotate Left/Right control for the landscape pass. The workflow captures the public Safari screen on both device families independently of signing. Inspect each capture before publishing it.
 
 ### Publish the reusable shortcut once
 

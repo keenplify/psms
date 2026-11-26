@@ -14,3 +14,25 @@ jobs:
         with:
           name: psms-signed-mobile-template
           path: ${{ runner.temp }}/psms-capture/pSMS-Capture.shortcut
+  capture:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [iphone, ipad]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open hosted sign-in in Safari
+        env:
+          PSMS_SIMULATOR_WEB_ONLY: "1"
+          PSMS_CAPTURE_DIR: ${{ runner.temp }}/psms-frames
+        run: |
+          bash scripts/mac-onboarding.sh "${{ matrix.family }}"
+          folder=$(find "$PSMS_CAPTURE_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+          device=$(basename "$folder" | cut -d- -f2-)
+          sleep 10
+          xcrun simctl io "$device" screenshot "$folder/01-sign-in.png"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.family }}-public-screen
+          path: ${{ runner.temp }}/psms-frames/*/01-sign-in.png
