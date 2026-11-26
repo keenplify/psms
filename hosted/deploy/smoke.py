@@ -3,6 +3,7 @@ import os
 import base64
 import json
 import secrets
+import time
 from pathlib import Path
 import subprocess
 import uuid
@@ -56,6 +57,32 @@ try:
         assert call(denied,{} if denied in ("pair","auth/browser") else None,personal)[0]==401
     assert call("messages",msg,personal)[0]==401
     assert call("otp/events",token=upload)[0]==401
+    if db_name.startswith("psms_qa_"):
+        stream_req=urllib.request.Request(BASE+"otp/events",headers={"Authorization":"Bearer "+personal})
+        def next_event(stream):
+            while True:
+                line=stream.readline()
+                assert line, "stream ended before event"
+                if line.startswith(b"event:"):
+                    name=line.split(b":",1)[1].strip()
+                    assert stream.readline().strip()==b"data: 1"
+                    return name
+        with urllib.request.urlopen(stream_req,timeout=10) as stream, ThreadPoolExecutor(1) as reader:
+            assert next_event(stream)==b"ready"
+            def arrival():
+                while next_event(stream)!=b"arrival":
+                    pass
+            pending=reader.submit(arrival)
+            for actor in (other,upload):
+                event_id=str(uuid.uuid4())
+                assert call("messages",{**msg,"id":event_id},actor)[0]==201
+                if actor==other:
+                    time.sleep(1)
+                    assert not pending.done(), "another account triggered an arrival"
+                else:
+                    pending.result(timeout=8)
+                assert call("messages/"+event_id,token=other if actor==other else owner,method="DELETE")[0]==204
+            print("PASS account-scoped live arrival with marker-only payload")
     assert call("auth/browser",token=owner,method="DELETE")[0]==204
     assert call("otp/recent",token=personal)[0]==401
     assert call("messages",msg,other)[0]==201
