@@ -29,7 +29,7 @@
     button.style.cssText="display:grid;gap:2px;min-width:144px;max-width:250px;padding:6px 14px;border:1px solid #c4c5cb;border-radius:9px;background:#f7f6fb;color:#202126;box-shadow:0 3px 12px #1414222b;font:500 12px system-ui;cursor:pointer";
     if(matchMedia("(prefers-color-scheme: dark)").matches){button.style.background="#34363d";button.style.color="#f5f5f7";button.style.borderColor="#555861"}
     const caption=document.createElement("span");
-    caption.textContent="Autofill from "+data.sender;
+    caption.textContent=(data.verified?"Autofill from ":"Code from ")+data.sender+(data.verified?"":" · not site-checked");
     const code=document.createElement("strong");
     code.textContent=data.code.length===6?data.code.slice(0,3)+" "+data.code.slice(3):data.code;
     code.style.cssText="font:600 17px system-ui;font-variant-numeric:tabular-nums";

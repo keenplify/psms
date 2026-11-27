@@ -4,31 +4,32 @@ async function authorizedPair(sender) {
   if (sender.frameId !== 0 || !sender.tab?.active || !sender.url) return null;
   const site = new URL(sender.url);
   if (site.protocol !== "https:" || !await api.permissions.contains({origins:[site.protocol+"//"+site.hostname+"/*"]})) return null;
-  const {sites=[],server} = await api.storage.local.get(["sites","server"]);
+  const {sites=[],unboundSites=[],server} = await api.storage.local.get(["sites","unboundSites","server"]);
   if (!sites.includes(site.origin) || !server) return null;
   const {pair} = await api.storage.session.get("pair");
   if (pair?.server !== server || !pair?.key || !pair?.token) return null;
-  return {site, server, pair};
+  return {site, server, pair, unbound: unboundSites.includes(site.origin)};
 }
 async function suggest(sender) {
   const allowed = await authorizedPair(sender);
   if (!allowed) return null;
-  const {site, server, pair} = allowed;
+  const {site, server, pair, unbound} = allowed;
   const response = await fetch(server+"/otp/recent",{headers:{Authorization:"Bearer "+pair.token},redirect:"error",cache:"no-store",credentials:"omit",signal:AbortSignal.timeout(4000)});
   if (!response.ok) return null;
   const key = await crypto.subtle.importKey("raw",new TextEncoder().encode(pair.key),"AES-GCM",false,["decrypt"]);
+  // A site-tagged code always wins. Otherwise use the newest untagged code, if the site allows them.
+  let best = null;
   for (const row of await response.json()) {
     try {
       const bytes=Uint8Array.from(atob(row.body),ch=>ch.charCodeAt(0));
       const clear=await crypto.subtle.decrypt({name:"AES-GCM",iv:bytes.slice(0,12)},key,bytes.slice(12));
-      const result=extractSuggestion(JSON.parse(new TextDecoder().decode(clear)),site.hostname,row.archived_at);
-      if(result) {
-        const current = await authorizedPair(sender);
-        return current?.pair.token === pair.token && current.server === server ? result : null;
-      }
+      const result=extractSuggestion(JSON.parse(new TextDecoder().decode(clear)),site.hostname,row.archived_at,Date.now(),unbound);
+      if(result && (!best || (result.verified && !best.verified) || (result.verified === best.verified && result.expires > best.expires))) best = result;
     } catch { /* Other archive keys may occur in the same inbox. */ }
   }
-  return null;
+  if (!best) return null;
+  const current = await authorizedPair(sender);
+  return current?.pair.token === pair.token && current.server === server && (best.verified || current.unbound) ? best : null;
 }
 api.runtime.onMessage.addListener((msg,sender,respond)=>{
   if(msg?.type !== "psms:suggest") return false;
@@ -46,7 +47,7 @@ api.runtime.onConnect.addListener(port => {
   };
   const changed = (changes, area) => {
     if ((area === "session" && changes.pair) ||
-        (area === "local" && (changes.sites || changes.server))) controller.abort();
+        (area === "local" && (changes.sites || changes.unboundSites || changes.server))) controller.abort();
   };
   port.onDisconnect.addListener(() => controller.abort());
   api.storage.onChanged.addListener(changed);

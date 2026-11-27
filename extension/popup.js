@@ -20,12 +20,27 @@ el("mode").onchange=()=>{
 };
 let currentTab;
 let enabledSites=[];
+let unboundSites=[];
+function showUnbound(){
+  const origin=currentTab?.url?new URL(currentTab.url).origin:"";
+  el("unbound-label").hidden=!enabledSites.includes(origin);
+  el("unbound").checked=unboundSites.includes(origin);
+}
+el("unbound").onchange=async()=>{
+  const origin=new URL(currentTab.url).origin;
+  unboundSites=unboundSites.filter(s=>s!==origin);
+  if(el("unbound").checked)unboundSites.push(origin);
+  await api.storage.local.set({unboundSites});
+  status(el("unbound").checked?"Untagged codes will be suggested on this site.":"Only codes tagged for this site will be suggested.");
+};
 async function detect(){
-  const {server,sites=[]}=await api.storage.local.get(["server","sites"]);
+  const {server,sites=[],unboundSites:loose=[]}=await api.storage.local.get(["server","sites","unboundSites"]);
+  unboundSites=loose;
   if(server && server!==hosted)customServer=server; showMode(server && server!==hosted?"custom":"hosted");
   const [tab]=await api.tabs.query({active:true,currentWindow:true});
   currentTab=tab; enabledSites=sites;
   if(tab?.url && sites.includes(new URL(tab.url).origin))el("enable").textContent="Disable on this site";
+  showUnbound();
   const {pair}=await api.storage.session.get("pair");
   if(pair){el("account").textContent="Reconnect to Papamo";status(pair.username ? "Connected as "+pair.username+"." : "Connected for this browser session.");return}
   try{
@@ -78,14 +93,15 @@ el("enable").onclick=async()=>{
     const sites=enabledSites;
     const id="psms-"+Array.from(new TextEncoder().encode(origin),x=>x.toString(16).padStart(2,"0")).join("");
     if(sites.includes(origin)){
-      enabledSites=sites.filter(s=>s!==origin);await api.storage.local.set({sites:enabledSites});
+      enabledSites=sites.filter(s=>s!==origin);unboundSites=unboundSites.filter(s=>s!==origin);
+      await api.storage.local.set({sites:enabledSites,unboundSites});showUnbound();
       await api.scripting.unregisterContentScripts({ids:[id]});el("enable").textContent="Enable on this site";status("Disabled on this site.");return
     }
     if(!await api.permissions.request({origins:[pattern]}))return;
     await api.scripting.registerContentScripts([{id,matches:[pattern],js:["field.js"],allFrames:false}]);
     enabledSites=[...sites,origin];await api.storage.local.set({sites:enabledSites});
     await api.scripting.executeScript({target:{tabId:tab.id},files:["field.js"]});
-    el("enable").textContent="Disable on this site";status("Enabled. Focus a verification code field.");
+    el("enable").textContent="Disable on this site";showUnbound();status("Enabled. Focus a verification code field.");
   }catch{status("Could not enable autofill here. Open a normal HTTPS tab and try again.")}
 };
 el("mode").disabled=el("server").disabled=el("connect").disabled=el("enable").disabled=true;

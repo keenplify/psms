@@ -4,5 +4,6 @@
 <label class="manual" hidden>Browser autofill token<input id="token" type="password" autocomplete="off"></label>
 <label class="manual" hidden>Recovery phrase or original key<input id="key" type="password" autocomplete="off"></label>
 <button class="manual" hidden id="connect">Connect</button> <button id="lock">Lock</button><br>
-<button id="enable">Enable on this site</button><p id="status" role="status"></p>
+<button id="enable">Enable on this site</button>
+<label id="unbound-label" hidden style="display:flex;gap:6px;align-items:flex-start"><input id="unbound" type="checkbox" style="margin-top:3px"><span>Also suggest codes from SMS without an <code>@site</code> tag. Only use this on sites you trust; any recent code can be offered here.</span></label><p id="status" role="status"></p>
 <script src="popup.js"></script></html>
