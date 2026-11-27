@@ -23,6 +23,10 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS seen_at timestamptz;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS used_at timestamptz;
 -- Set when the person finishes the phone's setup page, so the inbox shows the recovery kit.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ready_at timestamptz;
+-- Last message a phone token stored, for the phone list in Settings.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_used_at timestamptz;
+-- Read status is shared by every signed-in browser. It reveals nothing about message contents.
+ALTER TABLE archived_messages ADD COLUMN IF NOT EXISTS read_at timestamptz;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_sg_subject ON accounts(sg_subject);

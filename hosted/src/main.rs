@@ -205,7 +205,7 @@ async fn store(
     }
     tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
     tx.execute(
-        "UPDATE sessions SET used_at=now() WHERE digest=$1 AND used_at IS NULL",
+        "UPDATE sessions SET used_at=coalesce(used_at,now()), last_used_at=now() WHERE digest=$1 AND scope='upload'",
         &[&bearer(&h)?],
     )
     .await
@@ -229,10 +229,81 @@ async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> R
     let offset = i64::from(page.offset.unwrap_or(0));
     let user = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
+    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint,read_at IS NOT NULL FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
     Ok(Json(
-        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4)})).collect::<Vec<_>>()}),
+        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4),"read":r.get::<_,bool>(5)})).collect::<Vec<_>>()}),
     ))
+}
+// Phone upload tokens for Settings. A token is identified by the start of its digest, never the token.
+async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
+    let user = identity(&a, &h, false).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let rows = db
+        .query(
+            "SELECT substr(encode(digest,'hex'),1,16),
+                    floor(extract(epoch FROM expires_at - interval '1 year'))::bigint,
+                    floor(extract(epoch FROM used_at))::bigint,
+                    floor(extract(epoch FROM last_used_at))::bigint
+             FROM sessions WHERE account_id=$1 AND scope='upload' AND expires_at>now()
+             ORDER BY last_used_at DESC NULLS LAST, expires_at DESC LIMIT 50",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(Json(json!({"phones": rows.iter().map(|r| json!({
+        "id": r.get::<_, String>(0),
+        "connected_at": r.get::<_, i64>(1),
+        "first_message_at": r.get::<_, Option<i64>>(2),
+        "last_message_at": r.get::<_, Option<i64>>(3),
+    })).collect::<Vec<_>>()})))
+}
+async fn remove_phone(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, Failure> {
+    if id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let user = identity(&a, &h, false).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    match db
+        .execute(
+            "DELETE FROM sessions WHERE account_id=$1 AND scope='upload' AND substr(encode(digest,'hex'),1,16)=lower($2)",
+            &[&user, &id],
+        )
+        .await
+        .map_err(|_| DOWN)?
+    {
+        0 => Err(StatusCode::NOT_FOUND),
+        _ => Ok(StatusCode::NO_CONTENT),
+    }
+}
+#[derive(Deserialize)]
+struct ReadIds {
+    ids: Vec<Uuid>,
+}
+async fn mark_read(
+    State(a): State<App>,
+    h: HeaderMap,
+    Json(read): Json<ReadIds>,
+) -> Result<StatusCode, Failure> {
+    if read.ids.is_empty() || read.ids.len() > 500 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let user = identity(&a, &h, false).await?;
+    let ids: Vec<String> = read.ids.iter().map(Uuid::to_string).collect();
+    a.pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .execute(
+            "UPDATE archived_messages SET read_at=now() WHERE account_id=$1 AND id=ANY($2) AND read_at IS NULL",
+            &[&user, &ids],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 async fn remove(
     State(a): State<App>,
@@ -305,8 +376,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/pair", post(pair))
         .route("/pair/seen", get(seen).post(mark_seen))
         .route("/pair/ready", post(mark_ready))
+        .route("/phones", get(phones))
+        .route("/phones/{id}", delete(remove_phone))
         .route("/messages", get(list).post(store))
+        .route("/messages/read", post(mark_read))
         .route("/messages/{id}", delete(remove))
+        .route("/events", get(browser::inbox_events))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(app);
     axum::serve(

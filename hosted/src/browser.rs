@@ -83,6 +83,17 @@ pub(super) async fn events(
     h: HeaderMap,
 ) -> Result<impl IntoResponse, Failure> {
     let id = account(&a, &h).await?;
+    Ok(arrivals(a, h, id, false))
+}
+/// The signed-in inbox's live feed: the same arrival events, authorised by the owner session.
+pub(super) async fn inbox_events(
+    State(a): State<App>,
+    h: HeaderMap,
+) -> Result<impl IntoResponse, Failure> {
+    let id = identity(&a, &h, false).await?;
+    Ok(arrivals(a, h, id, true))
+}
+fn arrivals(a: App, h: HeaderMap, id: i64, owner: bool) -> impl IntoResponse {
     let rx = a.arrivals.subscribe();
     let stream =
         futures_util::stream::unfold((rx, a, h, true), move |(mut rx, a, h, first)| async move {
@@ -107,16 +118,21 @@ pub(super) async fn events(
                     Err(_) => Event::default().comment("keepalive"),
                 }
             };
-            if account(&a, &h).await.ok() != Some(id) {
+            let still = if owner {
+                identity(&a, &h, false).await.ok()
+            } else {
+                account(&a, &h).await.ok()
+            };
+            if still != Some(id) {
                 return None;
             }
             Some((Ok::<_, std::convert::Infallible>(event), (rx, a, h, false)))
         });
-    Ok((
+    (
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::HeaderName::from_static("x-accel-buffering"), "no"),
         ],
         Sse::new(stream),
-    ))
+    )
 }
