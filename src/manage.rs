@@ -41,6 +41,22 @@ pub enum Action {
         #[command(subcommand)]
         command: Contact,
     },
+    /// Queue a text for your sending device (pSMS for Mac today) and check on it.
+    Outbox {
+        #[command(subcommand)]
+        command: Outbox,
+    },
+}
+#[derive(Subcommand)]
+pub enum Outbox {
+    /// Queue a message. A sending device delivers it and keeps the sent copy in the archive.
+    Send {
+        /// The phone number or address to text.
+        to: String,
+        body: String,
+    },
+    /// Show whether a queued message was sent.
+    Status { id: Uuid },
 }
 #[derive(Subcommand)]
 pub enum Contact {
@@ -87,12 +103,15 @@ pub enum Contact {
 pub enum Scope {
     Api,
     Browser,
+    /// Lets another app queue texts in the outbox, and nothing else.
+    Send,
 }
 impl Scope {
     fn id(self) -> &'static str {
         match self {
             Self::Api => "api",
             Self::Browser => "browser",
+            Self::Send => "send",
         }
     }
 }
@@ -224,22 +243,6 @@ async fn call(
     })
 }
 /// Resolves a contact ID or an exact sender to the contact ID used by the archive.
-fn contact_of(value: &str, key: &str) -> String {
-    let lower = value.to_ascii_lowercase();
-    if lower.len() == 64 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
-        lower
-    } else {
-        crate::contact_id(value, key)
-    }
-}
-fn label_value(raw: &str, fallback: &str) -> Value {
-    match raw.split_once('=') {
-        Some((label, value)) if !label.trim().is_empty() => {
-            json!({"label": label.trim(), "value": value.trim()})
-        }
-        _ => json!({"label": fallback, "value": raw.trim()}),
-    }
-}
 async fn contact_command(path: &Path, opts: &ServerOptions, command: Contact) -> Result<()> {
     let key_of = |file: &Path| crate::kit::key_from_file(file);
     let cards = |key: String| async move {
@@ -280,7 +283,7 @@ async fn contact_command(path: &Path, opts: &ServerOptions, command: Contact) ->
         }
         Contact::Show { contact, key_file } => {
             let key = key_of(&key_file)?;
-            let id = contact_of(&contact, &key);
+            let id = cards::contact_of(&contact, &key);
             let cards = cards(key).await?;
             let card = cards.get(&id);
             println!(
@@ -299,30 +302,23 @@ async fn contact_command(path: &Path, opts: &ServerOptions, command: Contact) ->
             note,
         } => {
             let key = key_of(&key_file)?;
-            let id = contact_of(&contact, &key);
-            let mut card = cards(key.clone())
+            let id = cards::contact_of(&contact, &key);
+            let card = cards(key.clone())
                 .await?
                 .remove(&id)
                 .map(|(v, _)| v)
                 .unwrap_or_else(|| json!({}));
-            card["version"] = json!(1);
-            for (field, value) in [("fn", name), ("org", org), ("title", title), ("note", note)] {
-                if let Some(v) = value {
-                    card[field] = json!(v);
-                }
-            }
-            if !phones.is_empty() {
-                card["tel"] =
-                    Value::Array(phones.iter().map(|p| label_value(p, "mobile")).collect());
-            } else {
-                card["tel"] = Value::Array(cards::labeled(&card["tel"], "mobile"));
-            }
-            if !emails.is_empty() {
-                card["email"] =
-                    Value::Array(emails.iter().map(|e| label_value(e, "email")).collect());
-            } else {
-                card["email"] = Value::Array(cards::labeled(&card["email"], "email"));
-            }
+            let card = cards::edit(
+                card,
+                cards::Edit {
+                    name,
+                    org,
+                    title,
+                    note,
+                    phones,
+                    emails,
+                },
+            );
             let envelope = cards::seal(&key, &card).ok_or("could not seal the card")?;
             call(
                 path,
@@ -336,7 +332,7 @@ async fn contact_command(path: &Path, opts: &ServerOptions, command: Contact) ->
         }
         Contact::Reset { contact, key_file } => {
             let key = key_of(&key_file)?;
-            let id = contact_of(&contact, &key);
+            let id = cards::contact_of(&contact, &key);
             call(
                 path,
                 opts,
@@ -497,6 +493,31 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
             }
         },
         Action::Contact { command } => contact_command(path, opts, command).await?,
+        Action::Outbox { command } => {
+            let reply = match command {
+                Outbox::Send { to, body } => {
+                    call(
+                        path,
+                        opts,
+                        reqwest::Method::POST,
+                        "/outbox",
+                        Some(json!({"to": to, "body": body})),
+                    )
+                    .await?
+                }
+                Outbox::Status { id } => {
+                    call(
+                        path,
+                        opts,
+                        reqwest::Method::GET,
+                        &format!("/outbox/{id}"),
+                        None,
+                    )
+                    .await?
+                }
+            };
+            println!("{reply}");
+        }
     }
     Ok(())
 }

@@ -15,7 +15,7 @@ use uuid::Uuid;
 type ApiResult<T> = Result<T, StatusCode>;
 
 impl Archive {
-    fn app_token(&self, headers: &HeaderMap, scope: &str) -> bool {
+    pub(crate) fn app_token(&self, headers: &HeaderMap, scope: &str) -> bool {
         let Some(token) = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "))

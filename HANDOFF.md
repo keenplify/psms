@@ -82,11 +82,11 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Read conversations | Yes | Yes | `manage inbox` | search and get tools |
 | Unlock with the 12 words or key | Yes | Yes | key file | key at launch |
 | Unlock with the recovery kit PDF | Yes | Yes | `--key-file` takes the PDF | `--key-file` takes the PDF |
-| Star messages | Yes: click a bubble or ☆, filter ★ | Yes | `manage inbox` | star filter (read-only) |
-| Read and unread status | Yes (hosted) | Yes (SQLite storage) | `inbox read`, `unread`, `list --unread` | `read` field and `unread` search filter |
+| Star messages | Yes: click a bubble or ☆, filter ★ | Yes | `manage inbox` | `update_message`, star filter |
+| Read and unread status | Yes (hosted) | Yes (SQLite storage) | `inbox read`, `unread`, `list --unread` | `update_message`, `read` field and `unread` filter |
 | New messages without refreshing | pushed | polls the local file | — | — |
 | Contact names and photos | Yes | Yes (SQLite storage) | `contact list`, `show` (photo reported, not shown) | contact cards on messages and contacts |
-| Edit contacts | Yes, with photo | Yes, with photo | `contact set`, `reset` | — (read-only server) |
+| Edit contacts | Yes, with photo | Yes, with photo | `contact set`, `reset` (no photo) | `set_contact`, `reset_contact` (no photo) |
 | Labelled phone numbers and emails | Yes | Yes | `--phone label=value` | Yes |
 | Connect a phone | QR and setup page | self-hosted setup | `onboard` | — |
 | Recovery kit again | Settings | Settings | `onboard` writes a fresh kit | — |
@@ -95,13 +95,20 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Scoped tokens, webhooks, sync timing | — (hosted has none) | Settings | `manage` | — |
 | Connected phones list | Settings | — (one upload token) | `manage access` | — |
 | Hosted archive | Yes | Gap: desktop opens self-hosted archives only | Gap | Gap |
-| Replies | Gap | Gap (next: Messages via AppleScript) | Gap | — |
+| Reply from a conversation | Gap: asks Mac users to install the app; hosted has no outbox yet | Yes on Mac, through Messages | `outbox send` | `send_message` |
+| Queue texts for another device | Gap (hosted outbox) | Delivers the queue while open on a Mac | `outbox send`, `status` | `send_message`, `outbox_status` |
 
 ## Product scope
 
 Each recipient has a separate encrypted archive. Bundled SQLite is the default. Settings and first-run onboarding also support PostgreSQL, MySQL, MariaDB and SQL Server. The original SQLite file stays available for backup after migration. Verify the active destination with `psms storage status`.
 
-The desktop groups incoming messages into conversations and supports dark mode. Replies are disabled. Settings manages API tokens, browser tokens, event webhooks and regional sync timing. Chrome and Firefox offer click-to-fill for recent site-bound codes. Install the extensions from the release ZIPs as described in the guide. Android capture is planned.
+The desktop groups incoming messages into conversations and supports dark mode. On a Mac it replies through the Messages app with AppleScript, using Text Message Forwarding for SMS when the iPhone allows it, and saves each sent reply sealed in the archive through `POST /v1/messages`.
+
+### Outbox
+
+Any surface can queue a text with `POST /v1/outbox {to, body}` (owner token, or an app token with the `send` scope from `psms manage access create send`). A sending device claims work with `POST /v1/outbox/claim`, sends it, and reports `POST /v1/outbox/{id}/result {status: sent|failed, error?}`. Claims return to the queue after five minutes without a result. `GET /v1/outbox/{id}` shows the status. The service never sends anything itself and drops the text once a device reports it sent. pSMS for Mac is the sending device today and checks the queue every few seconds while it is open; an Android app can use the same three calls. Texts queued while the archive is locked are sent but not kept in the archive, because the desktop needs the key to seal the copy.
+
+Desktop stars, read status and contact edits still write the SQLite file directly. Move them onto the API (`PATCH /v1/messages/{id}`, `POST /v1/messages/read`, `PUT /v1/contacts/{id}/card`) as AGENTS.md asks; replies and the outbox already use it. Settings manages API tokens, browser tokens, event webhooks and regional sync timing. Chrome and Firefox offer click-to-fill for recent site-bound codes. Install the extensions from the release ZIPs as described in the guide. Android capture is planned.
 
 For an AI client, run `psms init` and register `psms mcp` as a stdio server. The tools support combined message filters, message lookup by UUID, contact expansion and paginated contact history. A recovery key enables local decryption and shares matching message content with the selected AI client.
 

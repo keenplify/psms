@@ -1,6 +1,6 @@
 #[path = "../../src/decrypt.rs"]
 mod actions;
-pub use actions::decrypt;
+pub use actions::{decrypt, open_message};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
@@ -14,6 +14,8 @@ pub struct Mail {
     pub locked: bool,
     pub pgp: bool,
     pub read: bool,
+    /// A reply sent from this computer.
+    pub outgoing: bool,
     /// Messages-style time for the conversation list: "9:54 AM", "Yesterday", a weekday or a date.
     pub when: String,
 }
@@ -73,14 +75,15 @@ pub fn group(records: Vec<Record>, key: Option<&str>) -> (Vec<Thread>, bool) {
     {
         let pgp = provider == "papamo:openpgp:v1";
         let content = if provider == "papamo:encrypted:v1" {
-            key.and_then(|s| decrypt(s, &body))
+            key.and_then(|s| open_message(s, &body))
         } else if pgp {
             None
         } else {
-            Some((provider, body.clone()))
+            Some((provider, body.clone(), false))
         };
         let locked = content.is_none();
-        let (sender, text) = content.unwrap_or_else(|| ("Encrypted message".into(), body));
+        let (sender, text, outgoing) =
+            content.unwrap_or_else(|| ("Encrypted message".into(), body, false));
         let group = if locked {
             format!("locked/{id}")
         } else {
@@ -108,6 +111,7 @@ pub fn group(records: Vec<Record>, key: Option<&str>) -> (Vec<Thread>, bool) {
             pgp,
             read,
             when,
+            outgoing,
         });
     }
     (threads, older)

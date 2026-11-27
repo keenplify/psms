@@ -1,0 +1,199 @@
+//! Replies and queued texts, sent from this computer through the Messages app. The desktop talks
+//! to the local archive over the same HTTP API as the CLI and MCP server: it saves each sent
+//! reply sealed with the archive key, and delivers messages other apps queued in the outbox.
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{path::Path, time::Duration};
+
+/// Sends through Messages. The recipient and text are passed as script arguments, never
+/// spliced into the script. Uses the SMS account (Text Message Forwarding) when there is one,
+/// otherwise iMessage.
+#[cfg(target_os = "macos")]
+pub fn send(to: &str, text: &str) -> Result<(), String> {
+    const SCRIPT: &str = r#"on run argv
+    set target to item 1 of argv
+    set message to item 2 of argv
+    tell application "Messages"
+        try
+            set chosen to 1st account whose service type = SMS and enabled is true
+        on error
+            set chosen to 1st account whose service type = iMessage and enabled is true
+        end try
+        send message to participant target of chosen
+    end tell
+end run"#;
+    let out = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", SCRIPT, "--", to, text])
+        .output()
+        .map_err(|_| "Could not start Messages.".to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let error = String::from_utf8_lossy(&out.stderr);
+    Err(
+        if error.contains("-1743") || error.contains("Not authorized") {
+            "Allow pSMS to control Messages in System Settings → Privacy & Security → Automation."
+                .into()
+        } else if error.contains("-1728") || error.contains("Can’t get account") {
+            "Sign in to Messages, and turn on Text Message Forwarding on your iPhone for SMS."
+                .into()
+        } else {
+            "Messages could not send this reply.".into()
+        },
+    )
+}
+#[cfg(not(target_os = "macos"))]
+pub fn send(_: &str, _: &str) -> Result<(), String> {
+    Err("Replies need pSMS for Mac, which sends through the Messages app.".into())
+}
+pub const SUPPORTED: bool = cfg!(target_os = "macos");
+
+/// The archive's private ID for a sender, as the shortcut computes it.
+pub fn contact_id(sender: &str, key: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(format!("psms-contact-v1\n{sender}\n{key}"))
+    )
+}
+
+fn seal(key: &str, to: &str, text: &str) -> Option<String> {
+    let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).ok()?;
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).ok()?;
+    let clear = json!({"sender": to, "body": text, "direction": "out"}).to_string();
+    let sealed = cipher
+        .encrypt(Nonce::from_slice(&nonce), clear.as_bytes())
+        .ok()?;
+    Some(STANDARD.encode([nonce.as_slice(), &sealed].concat()))
+}
+
+/// The sealed request that keeps a sent reply in the archive, linked to the contact.
+pub fn sent_copy(key: &str, to: &str, text: &str) -> Option<(String, Value)> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let body = json!({
+        "id": id, "sender": "papamo:encrypted:v1", "body": seal(key, to, text)?,
+        "contact_id": contact_id(to, key),
+    });
+    Some((id, body))
+}
+
+/// The local archive's HTTP API, reached with the owner token like the CLI.
+pub struct Api {
+    base: String,
+    token: String,
+}
+impl Api {
+    /// Finds the running local service for the archive at `path`.
+    pub fn local(path: &Path, settings: &Path) -> Option<Api> {
+        let mut ready = path.as_os_str().to_os_string();
+        ready.push(".ready");
+        let addr: std::net::SocketAddr =
+            std::fs::read_to_string(ready).ok()?.trim().parse().ok()?;
+        let db = Connection::open_with_flags(settings, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        let token: String = db
+            .query_row(
+                "SELECT owner FROM local_credentials WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )
+            .ok()?;
+        let prefix = db
+            .query_row("SELECT prefix FROM tunnel_runtime WHERE id=1", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap_or_else(|_| "/v1".into());
+        Some(Api {
+            base: format!("http://{addr}{prefix}"),
+            token,
+        })
+    }
+    fn call(&self, method: reqwest::Method, route: &str, body: Option<Value>) -> Result<Value, ()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ())?;
+        runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|_| ())?;
+            let mut req = client
+                .request(method, format!("{}{route}", self.base))
+                .bearer_auth(&self.token);
+            if let Some(body) = body {
+                req = req.json(&body);
+            }
+            let res = req.send().await.map_err(|_| ())?;
+            if !res.status().is_success() {
+                return Err(());
+            }
+            let text = res.text().await.map_err(|_| ())?;
+            Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+        })
+    }
+    /// Keeps a sent reply in the archive, sealed and already read.
+    pub fn store(&self, key: &str, to: &str, text: &str) -> Result<(), &'static str> {
+        let (id, body) = sent_copy(key, to, text).ok_or("Could not seal the reply.")?;
+        let failed = "Sent, but could not save the reply in this archive.";
+        self.call(reqwest::Method::POST, "/messages", Some(body))
+            .map_err(|_| failed)?;
+        self.call(
+            reqwest::Method::POST,
+            "/messages/read",
+            Some(json!({"ids": [id]})),
+        )
+        .map_err(|_| failed)?;
+        Ok(())
+    }
+    /// Sends what other apps queued, and reports each result. Returns how many were sent.
+    /// Keeps a sealed copy when the archive key is unlocked here.
+    pub fn deliver(&self, key: Option<&str>) -> usize {
+        let Ok(batch) = self.call(reqwest::Method::POST, "/outbox/claim", None) else {
+            return 0;
+        };
+        let mut sent = 0;
+        for item in batch["messages"].as_array().into_iter().flatten() {
+            let (Some(id), Some(to), Some(text)) = (
+                item["id"].as_str(),
+                item["to"].as_str(),
+                item["body"].as_str(),
+            ) else {
+                continue;
+            };
+            let outcome = match send(to, text) {
+                Ok(()) => {
+                    sent += 1;
+                    if let Some(key) = key {
+                        let _ = self.store(key, to, text);
+                    }
+                    json!({"status": "sent"})
+                }
+                Err(e) => json!({"status": "failed", "error": e}),
+            };
+            let _ = self.call(
+                reqwest::Method::POST,
+                &format!("/outbox/{id}/result"),
+                Some(outcome),
+            );
+        }
+        sent
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sent_copies_open_as_outgoing_in_the_same_conversation() {
+        let key = "0123456789abcdef0123456789abcdef";
+        let (id, body) = sent_copy(key, "+15550123", "On my way").unwrap();
+        assert_eq!(body["id"], id.as_str());
+        assert_eq!(body["contact_id"], contact_id("+15550123", key).as_str());
+        let opened = crate::archive::open_message(key, body["body"].as_str().unwrap()).unwrap();
+        assert_eq!(opened, ("+15550123".into(), "On my way".into(), true));
+    }
+}

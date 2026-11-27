@@ -6,6 +6,12 @@ const SETUP_SENDER: &str = "pSMS setup";
 const SETUP_BODY: &str = "Setup check: this shortcut can reach your inbox. Incoming texts will appear as their own conversations.";
 
 pub fn decrypt(key: &str, body: &str) -> Option<(String, String)> {
+    open_message(key, body).map(|(sender, text, _)| (sender, text))
+}
+
+/// Like `decrypt`, and also reports replies sent from a computer, which store the other
+/// person as `sender` and `"direction": "out"`.
+pub fn open_message(key: &str, body: &str) -> Option<(String, String, bool)> {
     let bytes = STANDARD.decode(body).ok()?;
     if bytes.len() <= 28 {
         return None;
@@ -19,9 +25,10 @@ pub fn decrypt(key: &str, body: &str) -> Option<(String, String)> {
     let text: String = json.get("body")?.as_str()?.into();
     // Older shortcuts encrypted an empty message when run without a Message input.
     if sender.trim().is_empty() && text.trim().is_empty() {
-        return Some((SETUP_SENDER.into(), SETUP_BODY.into()));
+        return Some((SETUP_SENDER.into(), SETUP_BODY.into(), false));
     }
-    Some((sender, text))
+    let outgoing = json.get("direction").and_then(|d| d.as_str()) == Some("out");
+    Some((sender, text, outgoing))
 }
 
 #[cfg(test)]

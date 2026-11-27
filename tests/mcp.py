@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as root:
    if "id" in msg:return json.loads(p.stdout.readline())["result"]
   res=call(dict(id=1,method="initialize",params={"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}));assert "tools" in res["capabilities"]
   call(dict(method="notifications/initialized"))
-  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history"}
+  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status"}
   def tool(id,name,arguments):
    res=call(dict(id=id,method="tools/call",params={"name":name,"arguments":arguments}))
    return json.loads(res["content"][0]["text"])
@@ -44,6 +44,16 @@ with tempfile.TemporaryDirectory() as root:
   assert tool(10,"search_messages",{"unread":True})["messages"]==[] and tool(11,"get_message",{"id":mid})["read"] is True
   manage("contact","reset","Mika","--key-file",str(kf))
   assert tool(12,"get_message",{"id":mid})["contact"]["name"]=="Mika Santos"
+  # Writes go through the same API as the CLI.
+  assert tool(13,"update_message",{"id":mid,"starred":True,"read":False})["updated"] is True
+  assert tool(14,"get_message",{"id":mid})["starred"] is True and tool(15,"get_message",{"id":mid})["read"] is False
+  assert tool(16,"set_contact",{"contact":"Mika","title":"Chef","phones":["work=+1 555 0199"]})["card"]["phones"]==[{"label":"work","value":"+1 555 0199"}]
+  assert tool(17,"list_contacts",{})["contacts"][0]["card"]["title"]=="Chef"
+  assert tool(18,"reset_contact",{"contact":cid})["reset"] is True
+  assert tool(19,"get_message",{"id":mid})["contact"]["name"]=="Mika Santos"
+  queued=tool(20,"send_message",{"to":"+15550100","body":"On my way"});assert queued["status"]=="queued"
+  assert tool(21,"outbox_status",{"id":queued["id"]})["status"]=="queued"
+  cliq=json.loads(manage("outbox","send","+15550101","See you"));assert json.loads(manage("outbox","status",cliq["id"]))["status"]=="queued"
   p.stdin.close();p.wait(10);assert p.returncode==0
-  print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status")
+  print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status, MCP writes and the outbox")
  finally:subprocess.run(cli+["stop"],check=True,stdout=subprocess.DEVNULL)

@@ -15,6 +15,7 @@ mod kit;
 mod onboard;
 #[path = "../../src/recovery.rs"]
 mod recovery;
+mod replies;
 mod setup;
 use archive::Thread;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -88,6 +89,8 @@ struct Dashboard {
     email_rows: Vec<(Entity<InputState>, Entity<InputState>)>,
     /// The photo being edited: None keeps the card's photo, Some(None) removes it.
     card_photo: Option<Option<(String, String)>>,
+    reply: Entity<InputState>,
+    sending: bool,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
     let b = Button::new(id).label(label);
@@ -1219,16 +1222,25 @@ impl Dashboard {
                             })),
                     )
                 }
+                // Replies from this computer sit on the right in blue, as in Messages.
+                let outgoing = m.outgoing;
                 feed = feed.child(
-                    div().v_flex().items_start().gap_1().child(actions).child(
-                        div()
-                            .max_w(px(520.))
-                            .px_4()
-                            .py_2()
-                            .rounded_xl()
-                            .bg(self.color(0xe9eaee))
-                            .child(text),
-                    ),
+                    div()
+                        .v_flex()
+                        .when(outgoing, |d| d.items_end())
+                        .when(!outgoing, |d| d.items_start())
+                        .gap_1()
+                        .child(actions)
+                        .child(
+                            div()
+                                .max_w(px(520.))
+                                .px_4()
+                                .py_2()
+                                .rounded_xl()
+                                .when(outgoing, |d| d.bg(rgb(0x0a7cff)).text_color(rgb(0xffffff)))
+                                .when(!outgoing, |d| d.bg(self.color(0xe9eaee)))
+                                .child(text),
+                        ),
                 );
             }
             pane = pane.child(feed);
@@ -1258,21 +1270,99 @@ impl Dashboard {
                     ),
             );
         }
+        let can_reply = replies::SUPPORTED
+            && self.session_key.is_some()
+            && !self.external
+            && thread.is_some_and(|t| {
+                !t.items[0].locked && t.title.chars().any(|c| c.is_ascii_digit() || c == '@')
+            });
+        let hint = if !replies::SUPPORTED {
+            "Replies need pSMS for Mac, which sends through the Messages app."
+        } else if self.session_key.is_none() {
+            "Unlock the archive to reply."
+        } else {
+            "Choose a conversation with a phone number to reply."
+        };
         pane.child(
             div()
                 .border_t_1()
                 .border_color(self.color(0xdce0e5))
                 .p_3()
-                .child(
+                .child(if can_reply {
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(div().flex_1().child(Input::new(&self.reply)))
+                        .child(
+                            Button::new("reply-send")
+                                .primary()
+                                .label(if self.sending { "Sending…" } else { "Send" })
+                                .disabled(self.sending)
+                                .on_click(cx.listener(|s, _, w, cx| s.send_reply(w, cx))),
+                        )
+                } else {
                     div()
                         .rounded_full()
                         .bg(self.color(0xf3f4f6))
                         .px_4()
                         .py_2()
                         .text_color(self.color(MUTED))
-                        .child("Reply is a upcoming feature"),
-                ),
+                        .child(hint)
+                }),
         )
+    }
+    /// Sends the typed reply through Messages, then keeps a sealed copy in this archive.
+    fn send_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.reply.read(cx).value().trim().to_string();
+        let (Some(key), Some(to)) = (
+            self.session_key.clone(),
+            self.threads
+                .iter()
+                .find(|t| Some(&t.key) == self.selected.as_ref())
+                .map(|t| t.title.clone()),
+        ) else {
+            return;
+        };
+        if text.is_empty() || self.sending {
+            return;
+        }
+        let Some(api) = self.api() else {
+            self.notice = "Start the archive service to send replies.".into();
+            cx.notify();
+            return;
+        };
+        self.sending = true;
+        self.notice.clear();
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let sent = cx
+                .background_executor()
+                .spawn(async move {
+                    replies::send(&to, &text)?;
+                    api.store(&key, &to, &text).map_err(String::from)
+                })
+                .await;
+            let _ = this.update_in(cx, |s, window, cx| {
+                s.sending = false;
+                match sent {
+                    Ok(()) => {
+                        s.notice = "Sent.".into();
+                        s.reply.update(cx, |i, cx| i.set_value("", window, cx));
+                        s.refresh();
+                    }
+                    Err(e) => s.notice = e,
+                }
+                cx.notify()
+            });
+        })
+        .detach();
+    }
+    /// The local archive's API, which every change goes through.
+    fn api(&self) -> Option<replies::Api> {
+        if self.external {
+            return None;
+        }
+        replies::Api::local(&self.path, &self.path)
     }
 }
 impl Render for Dashboard {
@@ -1452,6 +1542,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     let search =
                         cx.new(|cx| InputState::new(window, cx).placeholder("Search this page"));
+                    let reply = cx.new(|cx| InputState::new(window, cx).placeholder("Message"));
                     let card_fields = ["Name", "Company", "Job title", "Notes"]
                         .map(|hint| cx.new(|cx| InputState::new(window, cx).placeholder(hint)));
                     let endpoint = cx.new(|cx| {
@@ -1466,7 +1557,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let hook_token = cx.new(|cx| InputState::new(window, cx).masked(true));
                     cx.new(|cx: &mut Context<Dashboard>| {
                         // Inputs only redraw when their owner does, so re-render on every edit.
-                        for field in std::iter::once(&search).chain(card_fields.iter()) {
+                        for field in [&search, &reply].into_iter().chain(card_fields.iter()) {
                             cx.subscribe(
                                 field,
                                 |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
@@ -1509,6 +1600,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }).is_err(){break;}
                                 }
                                 cx.background_executor().timer(Duration::from_secs(4)).await;
+                                // Deliver texts other apps queued, while this Mac is open.
+                                if replies::SUPPORTED
+                                    && let Ok(Some((api, key))) = this.update(cx, |s, _| s.api().map(|a| (a, s.session_key.clone())))
+                                {
+                                    cx.background_executor()
+                                        .spawn(async move { api.deliver(key.as_deref()) })
+                                        .await;
+                                }
                                 if this
                                     .update(cx, |s, cx| {
                                         if let Ok(v) =
@@ -1575,6 +1674,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             phone_rows: Vec::new(),
                             email_rows: Vec::new(),
                             card_photo: None,
+                            reply,
+                            sending: false,
                         };
                         if s.screen==Screen::Setup && s.step==1 {s.detect_domain(window,cx);}
                         s.refresh();

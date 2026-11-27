@@ -83,6 +83,61 @@ pub fn merged(key: &str, row: &Value) -> Option<(Value, &'static str)> {
     }
 }
 
+/// A contact ID as given, or computed from an exact sender.
+pub fn contact_of(value: &str, key: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if lower.len() == 64 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+        lower
+    } else {
+        crate::contact_id(value, key)
+    }
+}
+fn label_value(raw: &str, fallback: &str) -> Value {
+    match raw.split_once('=') {
+        Some((label, value)) if !label.trim().is_empty() => {
+            json!({"label": label.trim(), "value": value.trim()})
+        }
+        _ => json!({"label": fallback, "value": raw.trim()}),
+    }
+}
+/// Changes to a card. Given fields replace the current ones; phones and emails take label=value.
+#[derive(Default)]
+pub struct Edit {
+    pub name: Option<String>,
+    pub org: Option<String>,
+    pub title: Option<String>,
+    pub note: Option<String>,
+    pub phones: Vec<String>,
+    pub emails: Vec<String>,
+}
+pub fn edit(mut card: Value, change: Edit) -> Value {
+    if !card.is_object() {
+        card = json!({});
+    }
+    card["version"] = json!(1);
+    for (field, value) in [
+        ("fn", change.name),
+        ("org", change.org),
+        ("title", change.title),
+        ("note", change.note),
+    ] {
+        if let Some(v) = value {
+            card[field] = json!(v);
+        }
+    }
+    for (field, given, fallback) in [
+        ("tel", change.phones, "mobile"),
+        ("email", change.emails, "email"),
+    ] {
+        card[field] = Value::Array(if given.is_empty() {
+            labeled(&card[field], fallback)
+        } else {
+            given.iter().map(|p| label_value(p, fallback)).collect()
+        });
+    }
+    card
+}
+
 pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS contact_cards(
     contact_id TEXT PRIMARY KEY NOT NULL CHECK(length(contact_id)=64),
     phone_card TEXT, phone_updated_at INTEGER,
@@ -252,5 +307,24 @@ mod tests {
         .unwrap();
         assert_eq!(hint(&db, Some(&id)), json!({"contact_card": "wanted"}));
         assert!(valid_contact(&id) && !valid_contact(&"A".repeat(64)));
+    }
+    #[test]
+    fn edits_keep_untouched_fields_and_label_numbers() {
+        let card = edit(
+            json!({"fn":"Ana","tel":"+1 555\n+1 666","photo":{"data":"x"}}),
+            Edit {
+                org: Some("Papamo".into()),
+                emails: vec!["work=ana@example.com".into()],
+                ..Edit::default()
+            },
+        );
+        assert_eq!(card["fn"], "Ana");
+        assert_eq!(card["org"], "Papamo");
+        assert_eq!(card["photo"]["data"], "x");
+        assert_eq!(card["tel"][1], json!({"label":"mobile","value":"+1 666"}));
+        assert_eq!(
+            card["email"][0],
+            json!({"label":"work","value":"ana@example.com"})
+        );
     }
 }

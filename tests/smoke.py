@@ -159,6 +159,22 @@ class ArchiveTest(unittest.TestCase):
                 self.assertEqual(self.request("POST","/messages/read",owner,{"ids":[]})[0],400)
                 self.assertEqual(self.request("PATCH",path,owner,{})[0],422)
                 self.assertEqual(self.request("GET","/messages?limit=1",owner)[1]["messages"][0]["body"],msg["body"])
+                # Outbox: anyone with the owner token queues; only the owner claims and reports.
+                self.assertEqual(self.request("POST","/outbox",upload,{"to":"+15550100","body":"Hi"})[0],401)
+                self.assertEqual(self.request("POST","/outbox",owner,{"to":"","body":"Hi"})[0],422)
+                status, queued = self.request("POST","/outbox",owner,{"to":"+15550100","body":"Hi"})
+                self.assertEqual((status, queued["status"]),(202,"queued"))
+                claimed = self.request("POST","/outbox/claim",owner)[1]["messages"]
+                self.assertEqual(claimed,[{"id":queued["id"],"to":"+15550100","body":"Hi"}])
+                self.assertEqual(self.request("POST","/outbox/claim",owner)[1]["messages"],[])
+                result = "/outbox/"+queued["id"]+"/result"
+                self.assertEqual(self.request("POST",result,owner,{"status":"maybe"})[0],422)
+                self.assertEqual(self.request("POST",result,owner,{"status":"sent"})[0],204)
+                self.assertEqual(self.request("POST",result,owner,{"status":"sent"})[0],409)
+                self.assertEqual(self.request("GET","/outbox/"+queued["id"],owner)[1]["status"],"sent")
+                with sqlite3.connect(self.db) as db:
+                    self.assertEqual(db.execute("SELECT body FROM outbox").fetchone(),(None,))
+                db.close()
                 self.assertEqual(self.request("DELETE",path,owner)[0],204)
                 self.assertEqual(self.request("GET",path,owner)[0],404)
                 self.assertEqual(self.request("POST","/messages",upload,msg)[0],410)
