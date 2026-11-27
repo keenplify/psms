@@ -1,7 +1,8 @@
 name: Native builds
+# Builds every platform for release tags, pull requests and manual runs. Pushes to main are
+# checked locally first (cargo fmt, clippy, tests and the smoke tests) to save Actions minutes.
 on:
   push:
-    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
