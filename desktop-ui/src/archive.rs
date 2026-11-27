@@ -17,6 +17,8 @@ pub struct Mail {
 pub struct Thread {
     pub key: String,
     pub title: String,
+    /// Hashed contact ID, when the sending shortcut provided one.
+    pub contact: Option<String>,
     pub items: Vec<Mail>,
 }
 pub fn read(
@@ -25,7 +27,7 @@ pub fn read(
     starred: bool,
     key: Option<&str>,
 ) -> rusqlite::Result<(Vec<Thread>, bool)> {
-    let mut stmt=db.prepare("SELECT m.id,m.sender,m.body,strftime('%Y-%m-%d %H:%M',m.archived_at,'unixepoch','localtime'),coalesce(f.starred,0)
+    let mut stmt=db.prepare("SELECT m.id,m.sender,m.body,strftime('%Y-%m-%d %H:%M',m.archived_at,'unixepoch','localtime'),coalesce(f.starred,0),(SELECT contact_id FROM message_contacts WHERE message_id=m.id)
         FROM messages m LEFT JOIN message_flags f ON m.id=f.message_id WHERE ?1=0 OR f.starred=1 ORDER BY m.rowid DESC LIMIT ?2 OFFSET ?3")?;
     let mut rows = stmt.query((starred, (LIMIT + 1) as i64, page * LIMIT as i64))?;
     let mut records = Vec::new();
@@ -36,16 +38,17 @@ pub fn read(
             row.get(2)?,
             row.get(3)?,
             row.get(4)?,
+            row.get(5)?,
         ));
     }
     Ok(group(records, key))
 }
-pub type Record = (String, String, String, String, bool);
+pub type Record = (String, String, String, String, bool, Option<String>);
 pub fn group(records: Vec<Record>, key: Option<&str>) -> (Vec<Thread>, bool) {
     let older = records.len() > LIMIT;
     let mut threads: Vec<Thread> = Vec::new();
     let mut groups = HashMap::new();
-    for (id, provider, body, time, starred) in records.into_iter().take(LIMIT) {
+    for (id, provider, body, time, starred, contact) in records.into_iter().take(LIMIT) {
         let pgp = provider == "papamo:openpgp:v1";
         let content = if provider == "papamo:encrypted:v1" {
             key.and_then(|s| decrypt(s, &body))
@@ -66,10 +69,14 @@ pub fn group(records: Vec<Record>, key: Option<&str>) -> (Vec<Thread>, bool) {
             threads.push(Thread {
                 key: group,
                 title: sender.clone(),
+                contact: None,
                 items: Vec::new(),
             });
             i
         });
+        if threads[idx].contact.is_none() {
+            threads[idx].contact = contact;
+        }
         threads[idx].items.push(Mail {
             id,
             text,

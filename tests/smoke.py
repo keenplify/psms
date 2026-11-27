@@ -123,9 +123,26 @@ class ArchiveTest(unittest.TestCase):
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,contact_id="b"*64))[0],409)
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,id=uuid.uuid4().hex))[0],201)
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,contact_id="invalid"))[0],422)
+                # Contact cards: the phone is asked for one until it sends a fresh copy.
+                envelope = msg["body"]
+                self.assertEqual(self.request("POST","/messages",upload,dict(second,id=uuid.uuid4().hex)),(201,{"contact_card":"wanted"}))
+                card = "/contacts/"+contact+"/card"
+                self.assertEqual(self.request("PUT",card,upload,{"envelope":envelope})[0],204)
+                self.assertEqual(self.request("GET","/contacts/cards",upload)[0],401)
+                cards = self.request("GET","/contacts/cards",owner)[1]["cards"]
+                self.assertEqual([(c["contact_id"],c["phone_card"],c["manual_card"]) for c in cards],[(contact,envelope,None)])
+                self.assertEqual(self.request("POST","/messages",upload,dict(second,id=uuid.uuid4().hex)),(201,{}))
+                self.assertEqual(self.request("PUT",card,owner,{"envelope":envelope})[0],204)
+                self.assertEqual(self.request("GET","/contacts/cards",owner)[1]["cards"][0]["manual_card"],envelope)
+                self.assertEqual(self.request("PUT",card,owner,{"envelope":None})[0],204)
+                self.assertIsNone(self.request("GET","/contacts/cards",owner)[1]["cards"][0]["manual_card"])
+                self.assertEqual(self.request("PUT",card,upload,{"envelope":None})[0],422)
+                self.assertEqual(self.request("PUT","/contacts/"+"A"*64+"/card",upload,{"envelope":envelope})[0],422)
+                self.assertEqual(self.request("PUT",card,upload,{"envelope":"not base64"})[0],422)
+                self.assertEqual(self.request("PUT",card,"wrong"*13,{"envelope":envelope})[0],401)
                 with sqlite3.connect(self.db) as db:
                     self.assertEqual(db.execute("SELECT id FROM contacts").fetchall(),[(contact,)])
-                    self.assertEqual(db.execute("SELECT count(*) FROM message_contacts").fetchone(),(2,))
+                    self.assertEqual(db.execute("SELECT count(*) FROM message_contacts").fetchone(),(4,))
                 db.close()
                 self.assertEqual(self.request("GET","/messages",upload)[0],401)
                 self.assertEqual(self.request("PATCH",path,owner,{"starred":True})[0],204)

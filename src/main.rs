@@ -14,6 +14,7 @@ macro_rules! env_name {
 }
 #[allow(dead_code)]
 mod app_tokens;
+mod cards;
 mod cli;
 mod cloudflare;
 mod contacts;
@@ -115,23 +116,26 @@ async fn receive(
     State(archive): State<Archive>,
     headers: HeaderMap,
     Json(mut message): Json<Message>,
-) -> StatusCode {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let provided = headers
         .get("authorization")
         .map(|value| value.as_bytes())
         .unwrap_or_default();
     if !bool::from(archive.credential.as_bytes().ct_eq(provided)) && !archive.is_owner(&headers) {
-        return StatusCode::UNAUTHORIZED;
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     if !encryption::accepts(&message.sender, &message.body) {
-        return StatusCode::UNPROCESSABLE_ENTITY;
+        return StatusCode::UNPROCESSABLE_ENTITY.into_response();
     }
     if let Some(id) = &mut message.contact_id {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return StatusCode::UNPROCESSABLE_ENTITY;
+            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
         }
         id.make_ascii_lowercase();
     }
+    let contact = message.contact_id.clone();
+    let local = archive.clone();
     let arrivals = archive.arrivals.clone();
     let status = if let Some(remote) = &archive.remote {
         remote
@@ -152,7 +156,20 @@ async fn receive(
     if status == StatusCode::CREATED {
         arrivals.send_replace(());
     }
-    status
+    // Ask the phone for a contact card when this archive has none, or only a stale one.
+    if matches!(status, StatusCode::CREATED | StatusCode::OK) && local.remote.is_none() {
+        let hint = tokio::task::spawn_blocking(move || {
+            local
+                .db
+                .lock()
+                .map(|db| cards::hint(&db, contact.as_deref()))
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        return (status, Json(hint)).into_response();
+    }
+    status.into_response()
 }
 
 fn database_path(configured: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
@@ -379,6 +396,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             starred INTEGER NOT NULL
         )",
     )?;
+    db.execute_batch(cards::SCHEMA)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;
     if remote.is_some() {
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_hook_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_hook_cursor VALUES(1,0); CREATE TABLE IF NOT EXISTS external_sync_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_sync_cursor VALUES(1,0);")?;
@@ -457,6 +475,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .merge(inbox::routes(&prefix, archive.clone()))
+        .merge(cards::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .merge(sync_routes)

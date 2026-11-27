@@ -4,6 +4,7 @@ mod access;
 #[allow(dead_code)]
 mod app_tokens;
 mod archive;
+mod cards;
 mod connect;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
@@ -14,6 +15,7 @@ mod onboard;
 mod recovery;
 mod setup;
 use archive::Thread;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
@@ -73,6 +75,15 @@ struct Dashboard {
     baseline: i64,
     logo: Arc<Image>,
     data_version: i64,
+    /// Decrypted contact cards for the unlocked archive, keyed by contact ID.
+    cards: std::collections::HashMap<String, cards::Entry>,
+    card_open: bool,
+    card_editing: bool,
+    /// Name, company, job title and notes in the contact editor.
+    card_fields: [Entity<InputState>; 4],
+    /// Label and value inputs for each phone number and email being edited.
+    phone_rows: Vec<(Entity<InputState>, Entity<InputState>)>,
+    email_rows: Vec<(Entity<InputState>, Entity<InputState>)>,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
     let b = Button::new(id).label(label);
@@ -217,6 +228,10 @@ impl Dashboard {
                 }
                 self.threads = threads;
                 self.older = older;
+                self.cards = match (&self.session_key, self.external) {
+                    (Some(key), false) => cards::load(&self.db, key),
+                    _ => Default::default(),
+                };
             }
             Err(_) => self.notice = "Could not read this archive. Refresh to try again.".into(),
         }
@@ -280,6 +295,11 @@ impl Dashboard {
                     .collect()
             };
             let key = t.key.clone();
+            let entry = t.contact.as_ref().and_then(|c| self.cards.get(c));
+            let name = entry
+                .map(|e| e.card.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| t.title.clone());
             list = list.child(
                 div()
                     .id(("conversation", i))
@@ -295,18 +315,7 @@ impl Dashboard {
                         s.selected = Some(key.clone());
                         s.show(Screen::Inbox, cx)
                     }))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .size(px(36.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(self.color(if selected { 0x467ed3 } else { 0xd7dce3 }))
-                            .text_color(self.color(if selected { 0xfffffe } else { MUTED }))
-                            .child(initials),
-                    )
+                    .child(self.avatar(entry, initials, 36., selected))
                     .child(
                         div()
                             .v_flex()
@@ -317,7 +326,7 @@ impl Dashboard {
                                     .truncate()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(self.color(if selected { 0xfffffe } else { INK }))
-                                    .child(t.title.clone()),
+                                    .child(name),
                             )
                             .child(
                                 div()
@@ -424,6 +433,405 @@ impl Dashboard {
                     }),
             )
     }
+    fn avatar(
+        &self,
+        entry: Option<&cards::Entry>,
+        initials: String,
+        size: f32,
+        selected: bool,
+    ) -> Div {
+        let base = div()
+            .flex_shrink_0()
+            .size(px(size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .overflow_hidden();
+        if let Some(image) = entry.and_then(|e| e.image.clone()) {
+            return base.child(img(image).size(px(size)).rounded_full());
+        }
+        let initials = entry
+            .map(|e| {
+                e.card
+                    .name
+                    .split_whitespace()
+                    .take(2)
+                    .filter_map(|w| w.chars().next())
+                    .collect::<String>()
+                    .to_uppercase()
+            })
+            .filter(|i| !i.is_empty())
+            .or_else(|| {
+                Some(initials).filter(|i| i.chars().all(char::is_alphabetic) && !i.is_empty())
+            });
+        let base = base
+            .bg(self.color(if selected { 0x467ed3 } else { 0xa2a2a7 }))
+            .text_color(rgb(0xffffff))
+            .font_weight(FontWeight::SEMIBOLD);
+        // No name to abbreviate: show a person, as Messages does for unknown numbers.
+        match initials {
+            Some(letters) => base.child(letters),
+            None => base.child(Icon::new(IconName::User).size(px(size * 0.55))),
+        }
+    }
+    fn edit_card(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self
+            .threads
+            .iter()
+            .find(|t| Some(&t.key) == self.selected.as_ref())
+        else {
+            return;
+        };
+        let card = t
+            .contact
+            .as_ref()
+            .and_then(|c| self.cards.get(c))
+            .map(|e| e.card.clone())
+            .unwrap_or_else(|| cards::Card {
+                phones: vec![cards::Labeled {
+                    label: "mobile".into(),
+                    value: t.title.clone(),
+                }],
+                ..Default::default()
+            });
+        let values = [card.name, card.org, card.title, card.note];
+        for (field, value) in self.card_fields.clone().iter().zip(values) {
+            field.update(cx, |i, cx| i.set_value(value, window, cx));
+        }
+        self.phone_rows.clear();
+        self.email_rows.clear();
+        for item in &card.phones {
+            self.add_row(true, item, window, cx);
+        }
+        for item in &card.emails {
+            self.add_row(false, item, window, cx);
+        }
+        self.card_editing = true;
+        cx.notify();
+    }
+    /// Adds a label/value pair to the phone or email list in the contact editor.
+    fn add_row(
+        &mut self,
+        phone: bool,
+        item: &cards::Labeled,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if (if phone {
+            &self.phone_rows
+        } else {
+            &self.email_rows
+        })
+        .len()
+            >= 10
+        {
+            return;
+        }
+        let (label_hint, value_hint) = if phone {
+            ("mobile", "+1 555 0100")
+        } else {
+            ("home", "name@example.com")
+        };
+        let label = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(label_hint)
+                .default_value(item.label.clone())
+        });
+        let value = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(value_hint)
+                .default_value(item.value.clone())
+        });
+        for field in [&label, &value] {
+            cx.subscribe(
+                field,
+                |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        cx.notify()
+                    }
+                },
+            )
+            .detach();
+        }
+        if phone {
+            self.phone_rows.push((label, value));
+        } else {
+            self.email_rows.push((label, value));
+        }
+        cx.notify();
+    }
+    fn save_card(&mut self, reset: bool, cx: &mut Context<Self>) {
+        let (Some(key), Some(contact)) = (
+            self.session_key.clone(),
+            self.threads
+                .iter()
+                .find(|t| Some(&t.key) == self.selected.as_ref())
+                .and_then(|t| t.contact.clone()),
+        ) else {
+            self.notice = "This conversation can't store contact details.".into();
+            cx.notify();
+            return;
+        };
+        let card = (!reset).then(|| {
+            let read = |i: usize| self.card_fields[i].read(cx).value().trim().to_string();
+            let rows = |rows: &[(Entity<InputState>, Entity<InputState>)], fallback: &str| {
+                rows.iter()
+                    .map(|(label, value)| cards::Labeled {
+                        label: Some(label.read(cx).value().trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .unwrap_or_else(|| fallback.into()),
+                        value: value.read(cx).value().trim().to_string(),
+                    })
+                    .filter(|l| !l.value.is_empty())
+                    .collect::<Vec<_>>()
+            };
+            cards::Card {
+                name: read(0),
+                org: read(1),
+                title: read(2),
+                phones: rows(&self.phone_rows, "mobile"),
+                emails: rows(&self.email_rows, "email"),
+                note: read(3),
+                photo: self.cards.get(&contact).and_then(|e| e.card.photo.clone()),
+            }
+        });
+        match cards::save(&self.db, &key, &contact, card.as_ref()) {
+            Ok(()) => {
+                self.card_editing = false;
+                self.notice = if reset {
+                    "Showing your phone's details."
+                } else {
+                    "Contact saved."
+                }
+                .into();
+                self.refresh();
+            }
+            Err(e) => self.notice = e.into(),
+        }
+        cx.notify();
+    }
+    fn contact_panel(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let thread = self
+            .threads
+            .iter()
+            .find(|t| Some(&t.key) == self.selected.as_ref());
+        let entry = thread
+            .and_then(|t| t.contact.as_ref())
+            .and_then(|c| self.cards.get(c));
+        let card = entry.map(|e| e.card.clone()).unwrap_or_default();
+        let fallback = thread.map(|t| t.title.clone()).unwrap_or_default();
+        let name = if card.name.is_empty() {
+            fallback.clone()
+        } else {
+            card.name.clone()
+        };
+        let editable = thread.is_some_and(|t| t.contact.is_some())
+            && self.session_key.is_some()
+            && !self.external;
+        let mut panel = div()
+            .id("contact-panel")
+            .v_flex()
+            .w(px(300.))
+            .h_full()
+            .flex_shrink_0()
+            .overflow_y_scroll()
+            .p_4()
+            .gap_3()
+            .bg(self.color(0xffffff))
+            .border_l_1()
+            .border_color(self.color(0xdce0e5))
+            .child(
+                div()
+                    .h_flex()
+                    .justify_between()
+                    .child(
+                        Button::new("card-close")
+                            .icon(IconName::Close)
+                            .ghost()
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.card_open = false;
+                                s.card_editing = false;
+                                cx.notify()
+                            })),
+                    )
+                    .when(editable && !self.card_editing, |d| {
+                        d.child(
+                            Button::new("card-edit")
+                                .label("Edit")
+                                .on_click(cx.listener(|s, _, w, cx| s.edit_card(w, cx))),
+                        )
+                    }),
+            );
+        if self.card_editing {
+            for (label, field) in ["Name", "Company", "Job title"]
+                .iter()
+                .zip(self.card_fields.iter())
+            {
+                panel = panel.child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .child(self.caption(*label))
+                        .child(Input::new(field)),
+                );
+            }
+            for (phone, title) in [(true, "Phone numbers"), (false, "Emails")] {
+                let rows = if phone {
+                    &self.phone_rows
+                } else {
+                    &self.email_rows
+                };
+                let mut group = div().v_flex().gap_1().child(self.caption(title));
+                for (i, (label, value)) in rows.iter().enumerate() {
+                    group = group.child(
+                        div()
+                            .h_flex()
+                            .gap_1()
+                            .child(div().w(px(84.)).child(Input::new(label)))
+                            .child(div().flex_1().min_w_0().child(Input::new(value)))
+                            .child(
+                                Button::new((
+                                    if phone {
+                                        "phone-remove"
+                                    } else {
+                                        "email-remove"
+                                    },
+                                    i,
+                                ))
+                                .icon(IconName::Close)
+                                .ghost()
+                                .on_click(cx.listener(
+                                    move |s, _, _, cx| {
+                                        let rows = if phone {
+                                            &mut s.phone_rows
+                                        } else {
+                                            &mut s.email_rows
+                                        };
+                                        if i < rows.len() {
+                                            rows.remove(i);
+                                        }
+                                        cx.notify()
+                                    },
+                                )),
+                            ),
+                    );
+                }
+                group = group.child(
+                    Button::new(if phone { "phone-add" } else { "email-add" })
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .label(if phone {
+                            "Add phone number"
+                        } else {
+                            "Add email"
+                        })
+                        .on_click(cx.listener(move |s, _, w, cx| {
+                            let label = if phone { "mobile" } else { "home" };
+                            s.add_row(
+                                phone,
+                                &cards::Labeled {
+                                    label: label.into(),
+                                    value: String::new(),
+                                },
+                                w,
+                                cx,
+                            )
+                        })),
+                );
+                panel = panel.child(group);
+            }
+            panel = panel
+                .child(div().v_flex().gap_1().child(self.caption("Notes")).child(Input::new(&self.card_fields[3])))
+                .child(self.caption("Labels can be anything, like mobile, work or a custom tag. Saved encrypted with your archive key."))
+                .child(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(Button::new("card-cancel").label("Cancel").ghost().on_click(cx.listener(|s, _, _, cx| {
+                            s.card_editing = false;
+                            cx.notify()
+                        })))
+                        .child(Button::new("card-save").label("Save").primary().on_click(cx.listener(|s, _, _, cx| s.save_card(false, cx)))),
+                )
+                .when(entry.is_some_and(|e| e.edited && e.from_phone), |d| {
+                    d.child(Button::new("card-reset").label("Use phone details").ghost().on_click(cx.listener(|s, _, _, cx| s.save_card(true, cx))))
+                });
+            return panel;
+        }
+        panel = panel.child(
+            div()
+                .v_flex()
+                .items_center()
+                .gap_1()
+                .child(self.avatar(entry, name.chars().take(1).collect(), 88., false))
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(self.color(INK))
+                        .child(name),
+                )
+                .when(!card.org.is_empty() || !card.title.is_empty(), |d| {
+                    d.child(
+                        self.caption(
+                            [card.title.clone(), card.org.clone()]
+                                .into_iter()
+                                .filter(|v| !v.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                        ),
+                    )
+                }),
+        );
+        let phones = if card.phones.is_empty() && fallback.chars().any(|c| c.is_ascii_digit()) {
+            vec![cards::Labeled {
+                label: "phone".into(),
+                value: fallback,
+            }]
+        } else {
+            card.phones.clone()
+        };
+        let mut fields = div()
+            .v_flex()
+            .rounded_xl()
+            .bg(self.color(0xf3f4f6))
+            .overflow_hidden();
+        let mut any = false;
+        for cards::Labeled { label, value } in phones.iter().chain(card.emails.iter()) {
+            fields = fields.child(
+                div()
+                    .v_flex()
+                    .px_3()
+                    .py_2()
+                    .when(any, |d| d.border_t_1().border_color(self.color(0xdce0e5)))
+                    .child(self.caption(label.clone()))
+                    .child(
+                        div()
+                            .text_color(rgb(if self.dark { 0x4ea1ff } else { 0x0a7cff }))
+                            .child(value.clone()),
+                    ),
+            );
+            any = true;
+        }
+        if any {
+            panel = panel.child(fields);
+        }
+        if !card.note.is_empty() {
+            panel = panel.child(
+                div()
+                    .text_sm()
+                    .text_color(self.color(INK))
+                    .child(card.note.clone()),
+            );
+        }
+        panel.child(self.caption(match entry {
+            Some(e) if e.edited => "Edited by you.",
+            Some(_) => "From your iPhone's contacts.",
+            None if self.session_key.is_none() => "Unlock the archive to see contact details.",
+            None => "No contact details yet.",
+        }))
+    }
     fn unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.key.read(cx).value().to_string();
         let Ok(key) = recovery::key_from_backup(&key) else {
@@ -463,9 +871,15 @@ impl Dashboard {
             .min_w_0()
             .h_full()
             .bg(self.color(0xffffff));
-        let title = thread
-            .map(|t| t.title.clone())
+        let entry = thread
+            .and_then(|t| t.contact.as_ref())
+            .and_then(|c| self.cards.get(c));
+        let title = entry
+            .map(|e| e.card.name.clone())
+            .filter(|n| !n.is_empty())
+            .or_else(|| thread.map(|t| t.title.clone()))
             .unwrap_or_else(|| "Inbox".into());
+        let can_open = thread.is_some_and(|t| !t.items[0].locked);
         pane = pane.child(
             div()
                 .h_flex()
@@ -478,10 +892,31 @@ impl Dashboard {
                 .border_color(self.color(0xdce0e5))
                 .child(
                     div()
-                        .text_lg()
-                        .truncate()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .id("contact-open")
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded_lg()
+                        .when(can_open, |d| {
+                            d.cursor_pointer()
+                                .hover(|d| d.bg(rgb(if self.dark { 0x2c2f36 } else { 0xeceff3 })))
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.card_open = !s.card_open;
+                                    s.card_editing = false;
+                                    cx.notify()
+                                }))
+                        })
+                        .child(self.avatar(entry, title.chars().take(1).collect(), 30., false))
+                        .child(
+                            div()
+                                .text_lg()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .when(can_open, |d| d.child(self.caption("›"))),
                 )
                 .child(
                     button(
@@ -629,7 +1064,10 @@ impl Render for Dashboard {
                 .h_flex()
                 .size_full()
                 .child(self.sidebar(cx))
-                .child(self.inbox(cx)),
+                .child(self.inbox(cx))
+                .when(self.card_open && self.selected.is_some(), |d| {
+                    d.child(self.contact_panel(cx))
+                }),
             Screen::Settings => div()
                 .h_flex()
                 .size_full()
@@ -791,6 +1229,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     let search =
                         cx.new(|cx| InputState::new(window, cx).placeholder("Search this page"));
+                    let card_fields = ["Name", "Company", "Job title", "Notes"]
+                        .map(|hint| cx.new(|cx| InputState::new(window, cx).placeholder(hint)));
                     let endpoint = cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("archive.example.com")
@@ -802,15 +1242,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     let hook_token = cx.new(|cx| InputState::new(window, cx).masked(true));
                     cx.new(|cx: &mut Context<Dashboard>| {
-                        cx.subscribe(
-                            &search,
-                            |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
-                                if matches!(event, gpui_kit::component::input::InputEvent::Change) {
-                                    cx.notify()
-                                }
-                            },
-                        )
-                        .detach();
+                        // Inputs only redraw when their owner does, so re-render on every edit.
+                        for field in std::iter::once(&search).chain(card_fields.iter()) {
+                            cx.subscribe(
+                                field,
+                                |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
+                                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                                        cx.notify()
+                                    }
+                                },
+                            )
+                            .detach();
+                        }
                         cx.spawn(async move |this,cx|{
                             loop {
                                 if this.update(cx,|s,cx|s.check_updates(cx)).is_err(){break}
@@ -835,7 +1278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let mut records=Vec::new();
                                             for r in v["messages"].as_array()? {
                                                 let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get(0)).ok()?;
-                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time,r["starred"].as_i64()==Some(1)));
+                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time,r["starred"].as_i64()==Some(1),None));
                                             }
                                             Some((records,v["newest"].as_i64()?))
                                         }) {s.external_page=Some((page,starred,v.0));s.external_newest=v.1;} else {s.external_page=None;s.notice="Could not reach the selected database.".into();}
@@ -902,6 +1345,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 include_bytes!("../../assets/psms-mark.png").to_vec(),
                             )),
                             data_version,
+                            cards: Default::default(),
+                            card_open: false,
+                            card_editing: false,
+                            card_fields,
+                            phone_rows: Vec::new(),
+                            email_rows: Vec::new(),
                         };
                         if s.screen==Screen::Setup && s.step==1 {s.detect_domain(window,cx);}
                         s.refresh();
