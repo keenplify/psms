@@ -39,6 +39,27 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 const INK: u32 = 0x20232b;
 const MUTED: u32 = 0x586373;
 const BLUE: u32 = 0x2366c9;
+/// What the interface calls the computer pSMS runs on.
+pub(crate) const THIS_COMPUTER: &str = if cfg!(target_os = "macos") {
+    "this Mac"
+} else if cfg!(windows) {
+    "this PC"
+} else {
+    "this computer"
+};
+pub(crate) const THIS_COMPUTER_CAP: &str = if cfg!(target_os = "macos") {
+    "This Mac"
+} else if cfg!(windows) {
+    "This PC"
+} else {
+    "This computer"
+};
+/// Replies send through Messages, so only pSMS for Mac offers them.
+pub(crate) const READ_OR_REPLY: &str = if replies::SUPPORTED {
+    "read and reply"
+} else {
+    "read your texts"
+};
 const GUIDE: &str = "https://www.papamo.dev/docs/papamo-sms";
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -1248,7 +1269,7 @@ impl Dashboard {
                             s.hosted_seen = None;
                             s.key.update(cx, |i, cx| i.set_value("", window, cx));
                             s.unlock_box = false;
-                            s.notice = "Your papamo.dev inbox is open here. Replies from this Mac go through Messages.".into();
+                            s.notice = if replies::SUPPORTED { "Your papamo.dev inbox is open here. Replies from this Mac go through Messages." } else { "Your papamo.dev inbox is open here." }.into();
                         }
                         Err(e) => s.notice = e,
                     }

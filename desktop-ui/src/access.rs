@@ -38,20 +38,21 @@ fn show_token(label: &str, token: String, window: &mut Window, cx: &mut App) {
 fn confirm(
     window: &mut Window,
     cx: &mut Context<Dashboard>,
-    title: &'static str,
-    body: &'static str,
-    action: &'static str,
+    title: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+    action: impl Into<SharedString>,
     apply: impl Fn(&mut Dashboard, &mut Window, &mut Context<Dashboard>) + 'static,
 ) {
     let me = cx.entity();
+    let (title, body, action) = (title.into(), body.into(), action.into());
     let apply = std::rc::Rc::new(apply);
     window.open_dialog(cx, move |dialog, _, _| {
         let me = me.clone();
         let apply = apply.clone();
         dialog
-            .title(title)
+            .title(title.clone())
             .w(px(520.))
-            .child(div().v_flex().gap_3().child(body))
+            .child(div().v_flex().gap_3().child(body.clone()))
             .footer(
                 div()
                     .h_flex()
@@ -60,13 +61,16 @@ fn confirm(
                         button("confirm-cancel", "Cancel")
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
-                    .child(Button::new("confirm-go").primary().label(action).on_click(
-                        move |_, window, cx| {
-                            window.close_dialog(cx);
-                            let apply = apply.clone();
-                            me.update(cx, |s, cx| apply(s, window, cx));
-                        },
-                    )),
+                    .child(
+                        Button::new("confirm-go")
+                            .primary()
+                            .label(action.clone())
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let apply = apply.clone();
+                                me.update(cx, |s, cx| apply(s, window, cx));
+                            }),
+                    ),
             )
     });
 }
@@ -682,9 +686,10 @@ impl Dashboard {
                     .min_w_0()
                     .gap_1()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Keep self-hosting, add papamo.dev with Plus"))
-                    .child(div().text_sm().text_color(rgb(muted)).child(
-                        "Read and reply from any browser, keep a sealed off-site backup, and let your phone send with no tunnel. Your texts stay on this Mac.",
-                    ))
+                    .child(div().text_sm().text_color(rgb(muted)).child(format!(
+                        "{} from any browser, keep a sealed off-site backup, and let your phone send with no tunnel. Your texts stay on {THIS_COMPUTER}.",
+                        if replies::SUPPORTED { "Read and reply" } else { "Read your texts" }
+                    )))
                     .child(
                         Checkbox::new("upsell-never")
                             .checked(self.upsell_never)
@@ -797,21 +802,21 @@ impl Dashboard {
                 "Where your texts live",
                 "Your papamo.dev inbox",
                 Button::new("use-local")
-                    .label("Use this Mac instead")
+                    .label(format!("Use {THIS_COMPUTER} instead"))
                     .on_click(cx.listener(|_, _, w, cx| {
                         confirm(
                             w,
                             cx,
-                            "Show this Mac's archive?",
-                            "pSMS will show the archive stored on this Mac instead of your papamo.dev inbox. Your papamo.dev inbox and its messages stay as they are, and replies still go through this Mac. To fill this Mac's archive, connect a phone to it with Run setup again. You can switch back here at any time.",
-                            "Use this Mac",
+                            format!("Show {THIS_COMPUTER}'s archive?"),
+                            format!("pSMS will show the archive stored on {THIS_COMPUTER} instead of your papamo.dev inbox. Your papamo.dev inbox and its messages stay as they are{}. To fill {THIS_COMPUTER}'s archive, connect a phone to it with Run setup again. You can switch back here at any time.", if replies::SUPPORTED { format!(", and replies still go through {THIS_COMPUTER}") } else { String::new() }),
+                            format!("Use {THIS_COMPUTER}"),
                             |s, _, cx| {
                                 if relay::set_prefers_local(&s.db, true).is_ok() {
                                     s.hosted = None;
                                     s.session_key = None;
                                     s.external_page = None;
                                     s.hosted_seen = None;
-                                    s.notice = "Showing this Mac's archive.".into();
+                                    s.notice = format!("Showing {THIS_COMPUTER}'s archive.");
                                     s.refresh();
                                 }
                                 cx.notify()
@@ -835,8 +840,8 @@ impl Dashboard {
                         confirm(
                             w,
                             cx,
-                            "Sync this Mac's archive with papamo.dev?",
-                            "Your texts stay on this Mac, and a sealed copy goes to papamo.dev so you can read and reply in any browser, keep an off-site backup, and let your phone send there with no tunnel. Everything stays encrypted with your recovery words. This needs a Plus plan; your browser opens to sign in.",
+                            format!("Sync {THIS_COMPUTER}'s archive with papamo.dev?"),
+                            format!("Your texts stay on {THIS_COMPUTER}, and a sealed copy goes to papamo.dev so you can {READ_OR_REPLY} in any browser, keep an off-site backup, and let your phone send there with no tunnel. Everything stays encrypted with your recovery words. This needs a Plus plan; your browser opens to sign in."),
                             "Sign in and sync",
                             |s, w, cx| s.cloud_connect(w, cx),
                         )
@@ -851,7 +856,7 @@ impl Dashboard {
                         w,
                         cx,
                         "Show your papamo.dev inbox?",
-                        "pSMS will show your papamo.dev inbox instead of the archive on this Mac. The archive on this Mac stays as it is, and you can switch back here at any time. If this Mac isn't connected to papamo.dev yet, setup opens so you can sign in.",
+                        format!("pSMS will show your papamo.dev inbox instead of the archive on {THIS_COMPUTER}. The archive on {THIS_COMPUTER} stays as it is, and you can switch back here at any time. If {THIS_COMPUTER} isn't connected to papamo.dev yet, setup opens so you can sign in."),
                         "Use papamo.dev",
                         |s, _, cx| {
                             let _ = relay::set_prefers_local(&s.db, false);
@@ -877,9 +882,9 @@ impl Dashboard {
         self.setting_row(
             "Where your texts live",
             match (self.external, syncing) {
-                (true, _) => "Your own database",
-                (false, true) => "This Mac, synced with papamo.dev",
-                (false, false) => "This Mac",
+                (true, _) => "Your own database".to_string(),
+                (false, true) => format!("{THIS_COMPUTER_CAP}, synced with papamo.dev"),
+                (false, false) => THIS_COMPUTER_CAP.to_string(),
             },
             controls,
         )

@@ -335,7 +335,10 @@ pub fn computer_token(signed_in: &str) -> Result<String, String> {
                         .to_string(),
                 ),
                 s if (200..300).contains(&s) => Ok(r),
-                _ => Err("Could not add this Mac to your account. Sign in again.".to_string()),
+                _ => Err(format!(
+                    "Could not add {} to your account. Sign in again.",
+                    crate::THIS_COMPUTER
+                )),
             })?
             .json()
             .await

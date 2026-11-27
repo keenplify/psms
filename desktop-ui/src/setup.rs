@@ -430,7 +430,7 @@ impl Dashboard {
         if keep("one-time codes otp verification notification tab type copy accessibility") {
             messages.push(self.codes_view(cx).into_any_element());
         }
-        if keep("contacts names photos address book mac") {
+        if cfg!(target_os = "macos") && keep("contacts names photos address book mac") {
             messages.push(self.contacts_row(cx).into_any_element());
         }
         if keep("reply from anywhere send messages outbox login relay papamo.dev") {

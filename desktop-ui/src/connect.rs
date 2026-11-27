@@ -205,7 +205,7 @@ impl Dashboard {
     pub fn database_view(&self, cx: &mut Context<Self>) -> Div {
         let mut choices = div().v_flex().gap_3();
         if let Some(account) = &self.form.account {
-            // Someone who already set up pSMS online, or already keeps texts on this Mac, chooses
+            // Someone who already set up pSMS online, or already keeps texts on this computer, chooses
             // which one this app shows, so nothing is set up twice.
             let online = account.used;
             let here: i64 = self
@@ -215,19 +215,27 @@ impl Dashboard {
             let (title, detail) = match (online > 0, here > 0) {
                 (true, true) => (
                     "You have texts in two places".to_string(),
-                    format!("Your papamo.dev inbox has {online} messages and this Mac's archive has {here}. Choose which one this app shows. The other stays as it is."),
+                    format!(
+                        "Your papamo.dev inbox has {online} messages and {THIS_COMPUTER}'s archive has {here}. Choose which one this app shows. The other stays as it is."
+                    ),
                 ),
                 (true, false) => (
                     "You already set up pSMS online".to_string(),
-                    format!("Your papamo.dev inbox has {online} messages. Keep using it here, or start a separate archive on this Mac."),
+                    format!(
+                        "Your papamo.dev inbox has {online} messages. Keep using it here, or start a separate archive on {THIS_COMPUTER}."
+                    ),
                 ),
                 (false, true) => (
-                    "This Mac already has an archive".to_string(),
-                    format!("This Mac's archive has {here} messages. Keep using it, or switch this app to your papamo.dev inbox."),
+                    format!("{THIS_COMPUTER_CAP} already has an archive"),
+                    format!(
+                        "{THIS_COMPUTER_CAP}'s archive has {here} messages. Keep using it, or switch this app to your papamo.dev inbox."
+                    ),
                 ),
                 (false, false) => (
                     "Where should your texts go?".to_string(),
-                    "papamo.dev keeps them for you and needs no setup on this Mac. Self-hosting keeps them only on this Mac.".to_string(),
+                    format!(
+                        "papamo.dev keeps them for you and needs no setup on {THIS_COMPUTER}. Self-hosting keeps them only on {THIS_COMPUTER}."
+                    ),
                 ),
             };
             let hosted_label = if online > 0 {
@@ -238,9 +246,9 @@ impl Dashboard {
             let local_label = if self.form.manual_open {
                 "Hide self-hosted setup".to_string()
             } else if here > 0 {
-                format!("Keep this Mac's archive ({here} messages)")
+                format!("Keep {THIS_COMPUTER}'s archive ({here} messages)")
             } else {
-                "Self-host on this Mac instead".to_string()
+                format!("Self-host on {THIS_COMPUTER} instead")
             };
             choices = choices
                 .child(
@@ -268,9 +276,9 @@ impl Dashboard {
                         .disabled(self.form.busy)
                         .on_click(cx.listener(|s, _, _, cx| s.self_host_with_sync(cx))),
                 )
-                .child(self.caption(
-                    "Plus keeps your texts on this Mac and still gives you the web inbox, a sealed backup and phones that need no tunnel.",
-                ))
+                .child(self.caption(format!(
+                    "Plus keeps your texts on {THIS_COMPUTER} and still gives you the web inbox, a sealed backup and phones that need no tunnel."
+                )))
                 .child(
                     Button::new("manual-connection")
                         .label(local_label)
@@ -335,7 +343,9 @@ impl Dashboard {
         };
         if !account.plus {
             cx.open_url("https://www.papamo.dev/sms#plans");
-            self.notice = "Syncing a self-hosted archive with papamo.dev is part of Plus. Once your account has Plus, choose this again. Until then you can self-host on this Mac below.".into();
+            self.notice = format!(
+                "Syncing a self-hosted archive with papamo.dev is part of Plus. Once your account has Plus, choose this again. Until then you can self-host on {THIS_COMPUTER} below."
+            );
             self.form.manual_open = true;
             cx.notify();
             return;
@@ -347,7 +357,7 @@ impl Dashboard {
         };
         let token = account.token.clone();
         self.form.busy = true;
-        self.notice = "Connecting this Mac's archive to papamo.dev…".into();
+        self.notice = format!("Connecting {THIS_COMPUTER}'s archive to papamo.dev…");
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -363,7 +373,7 @@ impl Dashboard {
                 match result {
                     Ok(()) => {
                         s.finish(cx);
-                        s.notice = "This Mac's archive now syncs with papamo.dev: phones can send there with no tunnel, and you can read it in any browser.".into();
+                        s.notice = format!("{THIS_COMPUTER_CAP}'s archive now syncs with papamo.dev: phones can send there with no tunnel, and you can read it in any browser.");
                     }
                     Err(e) => s.notice = e,
                 }
