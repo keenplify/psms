@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::component::checkbox::Checkbox;
 
 fn show_token(label: &str, token: String, window: &mut Window, cx: &mut App) {
     cx.write_to_clipboard(ClipboardItem::new_string(token.clone()));
@@ -580,5 +581,85 @@ impl Dashboard {
             view = view.child(self.caption("Typing with Tab needs Accessibility permission. The Copy and Type buttons on the notification work without it."));
         }
         view.child(row)
+    }
+}
+
+impl Dashboard {
+    /// Self-hosting without papamo.dev: offer Plus until it is closed or turned off for good.
+    pub(super) fn show_upsell(&self) -> bool {
+        !self.upsell_closed
+            && !self.external
+            && self.hosted.is_none()
+            && self
+                .db
+                .query_row("SELECT 1 FROM cloud_link WHERE id=1", [], |_| Ok(()))
+                .is_err()
+            && self
+                .db
+                .query_row("SELECT dismissed FROM desktop_upsell WHERE id=1", [], |r| {
+                    r.get::<_, bool>(0)
+                })
+                .map(|d| !d)
+                .unwrap_or(true)
+    }
+    pub(super) fn upsell_banner(&self, cx: &mut Context<Self>) -> Div {
+        // Readable in both themes: dark green with light text, or pale green with dark text.
+        let (bg, border, ink, muted) = if self.dark {
+            (0x1d2b1c, 0x35502f, 0xf2f6ee, 0xb9c8b3)
+        } else {
+            (0xeef6e4, 0xd5e6c3, 0x1b2a17, 0x44573d)
+        };
+        div()
+            .h_flex()
+            .gap_3()
+            .items_center()
+            .px_4()
+            .py_3()
+            .bg(rgb(bg))
+            .border_b_1()
+            .border_color(rgb(border))
+            .text_color(rgb(ink))
+            .child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Keep self-hosting, add papamo.dev with Plus"))
+                    .child(div().text_sm().text_color(rgb(muted)).child(
+                        "Read and reply from any browser, keep a sealed off-site backup, and let your phone send with no tunnel. Your texts stay on this Mac.",
+                    ))
+                    .child(
+                        Checkbox::new("upsell-never")
+                            .checked(self.upsell_never)
+                            .label("Don't show again")
+                            .on_click(cx.listener(|s, on, _, cx| {
+                                s.upsell_never = *on;
+                                cx.notify()
+                            })),
+                    ),
+            )
+            .child(
+                Button::new("upsell-see")
+                    .primary()
+                    .label("See Plus")
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://www.papamo.dev/sms#plans"))),
+            )
+            .child(
+                Button::new("upsell-close")
+                    .ghost()
+                    .icon(IconName::Close)
+                    .tooltip("Close")
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        s.upsell_closed = true;
+                        if s.upsell_never {
+                            let _ = s.db.execute_batch(
+                                "CREATE TABLE IF NOT EXISTS desktop_upsell(id INTEGER PRIMARY KEY CHECK(id=1), dismissed INTEGER NOT NULL);
+                                 INSERT INTO desktop_upsell(id,dismissed) VALUES(1,1) ON CONFLICT(id) DO UPDATE SET dismissed=1;",
+                            );
+                        }
+                        cx.notify()
+                    })),
+            )
     }
 }

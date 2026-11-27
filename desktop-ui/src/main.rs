@@ -86,6 +86,9 @@ struct Dashboard {
     hosted_seen: Option<(i64, i64, bool)>,
     /// A computer token from setup, waiting for the recovery words to open the hosted inbox.
     pending_hosted: Option<String>,
+    /// The Plus banner: closed for this session, and the "Don't show again" box.
+    upsell_closed: bool,
+    upsell_never: bool,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -1210,6 +1213,9 @@ impl Dashboard {
             .min_w_0()
             .h_full()
             .bg(self.color(0xffffff));
+        if self.show_upsell() {
+            pane = pane.child(self.upsell_banner(cx));
+        }
         let entry = thread
             .and_then(|t| t.contact.as_ref())
             .and_then(|c| self.cards.get(c));
@@ -1925,6 +1931,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             hosted_cards: Default::default(),
                             hosted_seen: None,
                             pending_hosted: None,
+                            upsell_closed: false,
+                            upsell_never: false,
                             expiry: Some(30),
                             unlock_box: false,
                             notice: String::new(),
