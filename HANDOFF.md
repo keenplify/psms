@@ -15,7 +15,16 @@ The first simulator frames show the live hosted sign-in screen in Safari. [iPhon
 
 The Mac is the publisher’s capture workstation. The reader follows Safari, Files and Shortcuts on their own mobile device. Capture one full set on iPhone and another on iPad. Use a disposable account and synthetic messages throughout.
 
-### First run of the pairing shortcut
+### Hosted pairing with the shared pSMS shortcut
+
+Hosted accounts all use one shared, signed shortcut named **pSMS**: https://www.icloud.com/shortcuts/8d0e8936f2f4450e81862dca05493c7c. It holds no credentials; its single import question receives each person's private setup. In **Connect a phone**, a computer shows a QR code that opens `papamo.dev/sms/pair` on the iPhone, with the setup in the link fragment. On an iPhone, the dialog shows the same buttons directly. The phone page copies the setup and opens the iCloud link, and the user pastes the setup and taps **Add Shortcut**. Step 4 of the dialog confirms the first run and the first real text. The iPhone frames are in the Papamo site under `public/images/psms/pair-phone-*.png`.
+
+Only a change to the shortcut needs a Mac. Regenerate `examples/pSMS-Capture.shortcut`, sign it as `pSMS.shortcut`, import it on the Mac and use **Share → Copy iCloud Link**. Replace the link in the site's `app/sms/pair/route.ts` and `app/sms/inbox/shell.ts`. Phones keep the copy they installed until their owner pairs again.
+
+### First run of a self-signed shortcut (self-hosted)
+
+Self-hosted operators still create a personal shortcut with `psms onboard` or the desktop app and sign it on a Mac. The frames below show that flow.
+
 
 Adding the shortcut is not the last step. Open it once by hand so the system asks for its permissions. Approve **Always Allow** at the network prompt, otherwise background message runs stop at it. A run without an incoming message uploads one **pSMS setup** check message instead of a text. It confirms the upload credential and archive key end to end. Shortcuts built before this change uploaded an empty message instead. The inbox, desktop and MCP show those rows as the same setup check.
 
@@ -43,7 +52,7 @@ The launcher signs the credential-free **pSMS Capture** template, opens it in Ma
 
 ### Publish the reusable shortcut once
 
-Open the signed **pSMS Capture** on the Mac. Inspect the single setup import question and confirm the default is empty or `{}`. Use the untouched template to create an iCloud sharing link, or distribute the public signed file from a trusted HTTPS page. Validate the published link in Safari on a device with a different Apple account. Paste private setup only into a recipient’s own copy after import. Personal setup includes an upload credential and encryption key. Keep personalized shortcuts and pSMS.json private. Record the verified public link in the mobile setup guide before telling users to use it. Apple documents [sharing a shortcut](https://support.apple.com/guide/shortcuts/apdf01f8c054/ios) and [import questions](https://support.apple.com/guide/shortcuts/apdf330fd3a0/ios).
+Open the signed **pSMS Capture** on the Mac. Inspect the single setup import question and confirm the default is empty or `{}`. Use the untouched template to create an iCloud sharing link, or distribute the public signed file from a trusted HTTPS page. Validate the published link in Safari on a device with a different Apple account. Paste private setup only into a recipient’s own copy after import. Personal setup includes an upload credential and encryption key. Keep personalized shortcuts and pSMS.json private. The hosted link above was published from this template on 27 Nov 2026 and opened in Shortcuts on an iOS 26.2 simulator. Apple documents [sharing a shortcut](https://support.apple.com/guide/shortcuts/apdf01f8c054/ios) and [import questions](https://support.apple.com/guide/shortcuts/apdf330fd3a0/ios).
 
 ### Phone-only steps to photograph
 
