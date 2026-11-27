@@ -172,6 +172,10 @@ pub fn hint(db: &Connection, contact: Option<&str>) -> Value {
 #[serde(deny_unknown_fields)]
 struct Card {
     envelope: Option<String>,
+    /// "device" stores a card read from a device's address book (such as a Mac's Contacts) as
+    /// the phone's copy, so it never overrides edits.
+    #[serde(default)]
+    copy: Option<String>,
 }
 
 fn valid_contact(id: &str) -> bool {
@@ -205,7 +209,8 @@ async fn save(
     {
         return StatusCode::UNPROCESSABLE_ENTITY;
     }
-    let sql = match (phone, card.envelope.is_some()) {
+    let from_device = phone || card.copy.as_deref() == Some("device");
+    let sql = match (from_device, card.envelope.is_some()) {
         (true, true) => {
             "INSERT INTO contact_cards(contact_id,phone_card,phone_updated_at) VALUES(?1,?2,unixepoch())
              ON CONFLICT(contact_id) DO UPDATE SET phone_card=excluded.phone_card, phone_updated_at=unixepoch()"

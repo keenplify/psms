@@ -252,35 +252,7 @@ impl Dashboard {
         };
         cx.notify()
     }
-    pub fn settings_view(&self, wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let updates = div()
-            .v_flex()
-            .gap_3()
-            .min_w_0()
-            .child(self.heading("Software updates"))
-            .child(self.caption(concat!("Installed version ", env!("CARGO_PKG_VERSION"))))
-            .child(self.update_status.clone())
-            .child(self.caption(match &self.checked_at {
-                Some(time) => format!("Last checked {time} · Checks hourly"),
-                None => "Checks at startup and hourly".to_owned(),
-            }))
-            .child(
-                button("check-updates", "Check for updates")
-                    .disabled(self.checking || self.updating)
-                    .on_click(cx.listener(|s, _, _, cx| s.check_updates(cx))),
-            )
-            .child(div().mt_4().child(self.heading("Recovery kit")))
-            .child(self.caption(if self.session_key.is_some() {
-                "Save a fresh copy of the PDF with your 12 words. Keep it private."
-            } else {
-                "Unlock the archive to save your recovery kit again."
-            }))
-            .child(
-                Button::new("save-kit")
-                    .label("Save recovery kit (PDF)…")
-                    .disabled(self.session_key.is_none())
-                    .on_click(cx.listener(|s, _, _, cx| s.save_kit(cx))),
-            );
+    pub fn settings_view(&self, _wide: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let mut card = div()
             .v_flex()
             .gap_3()
@@ -382,16 +354,111 @@ impl Dashboard {
                         }),
                 ),
             );
-        let columns = if wide {
+        // One column of sections; the search box keeps the ones whose words match.
+        let query = self.settings_search.read(cx).value().trim().to_lowercase();
+        let keep = |words: &str| query.is_empty() || words.contains(query.as_str());
+        let heading = |title: &str| {
             div()
-                .h_flex()
-                .items_start()
-                .gap_8()
-                .child(div().flex_1().min_w_0().child(access))
-                .child(div().flex_1().min_w_0().child(card))
-        } else {
-            div().v_flex().gap_5().child(access).child(card)
+                .mt_6()
+                .mb_1()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(self.color(MUTED))
+                .child(title.to_uppercase())
         };
+        let mut list = div().v_flex().w_full().max_w(px(760.));
+        let mut general: Vec<AnyElement> = Vec::new();
+        if keep("where texts live papamo.dev self-hosted self host this mac switch archive inbox") {
+            general.push(self.source_row(cx).into_any_element());
+        }
+        if keep("appearance theme dark light mode") {
+            general.push(self.appearance_row(cx).into_any_element());
+        }
+        if keep("software updates version restart upgrade") {
+            let mut buttons = div().h_flex().gap_2().child(
+                button("check-updates", "Check")
+                    .disabled(self.checking || self.updating)
+                    .on_click(cx.listener(|s, _, _, cx| s.check_updates(cx))),
+            );
+            if self.update.is_some() {
+                buttons = buttons.child(
+                    Button::new("settings-apply-update")
+                        .primary()
+                        .label(if self.updating {
+                            "Restarting…"
+                        } else {
+                            "Restart to update"
+                        })
+                        .disabled(self.updating)
+                        .on_click(cx.listener(|s, _, _, cx| s.apply_update(cx))),
+                );
+            }
+            general.push(
+                self.setting_row(
+                    "Software updates",
+                    format!(
+                        "Version {} · {}",
+                        env!("CARGO_PKG_VERSION"),
+                        self.update_status
+                    ),
+                    buttons,
+                )
+                .into_any_element(),
+            );
+        }
+        if keep("recovery kit words key backup pdf") {
+            general.push(
+                self.setting_row(
+                    "Recovery kit",
+                    if self.session_key.is_some() {
+                        "Your 12 words as a PDF"
+                    } else {
+                        "Unlock to save it again"
+                    },
+                    Button::new("save-kit")
+                        .label("Save…")
+                        .disabled(self.session_key.is_none())
+                        .on_click(cx.listener(|s, _, _, cx| s.save_kit(cx))),
+                )
+                .into_any_element(),
+            );
+        }
+        if !general.is_empty() {
+            list = list.child(heading("General")).children(general);
+        }
+        let mut messages: Vec<AnyElement> = Vec::new();
+        if keep("one-time codes otp verification notification tab type copy accessibility") {
+            messages.push(self.codes_view(cx).into_any_element());
+        }
+        if keep("contacts names photos address book mac") {
+            messages.push(self.contacts_row(cx).into_any_element());
+        }
+        if keep("reply from anywhere send messages outbox login relay papamo.dev") {
+            messages.push(self.relay_view(cx).into_any_element());
+        }
+        if !messages.is_empty() {
+            list = list.child(heading("Messages")).children(messages);
+        }
+        // Self-hosted archives only: none of this applies to a papamo.dev inbox.
+        if self.hosted.is_none() {
+            let mut local: Vec<AnyElement> = Vec::new();
+            if keep("plus sync papamo.dev backup restore tunnel web") && !self.external {
+                local.push(self.cloud_view(cx).into_any_element());
+            }
+            if keep(
+                "access tokens api browser autofill send key devices tailscale network webhooks events",
+            ) {
+                local.push(div().mt_4().child(access).into_any_element());
+            }
+            if keep(
+                "archive storage database sqlite postgresql mysql mariadb sql server replication sync timing webhook receiver",
+            ) {
+                local.push(div().mt_4().child(card).into_any_element());
+            }
+            if !local.is_empty() {
+                list = list.child(heading("Self-hosted archive")).children(local);
+            }
+        }
         div()
             .v_flex()
             .flex_1()
@@ -427,7 +494,18 @@ impl Dashboard {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p_6()
-                    .child(div().v_flex().gap_5().child(updates).child(columns)),
+                    .child(
+                        div()
+                            .v_flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(760.))
+                                    .child(Input::new(&self.settings_search)),
+                            )
+                            .child(list),
+                    ),
             )
     }
 }

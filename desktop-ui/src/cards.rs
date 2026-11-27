@@ -44,7 +44,7 @@ pub fn open(key: &str, envelope: &str) -> Option<Value> {
     serde_json::from_slice(&clear).ok()
 }
 
-fn seal(key: &str, value: &Value) -> Option<String> {
+pub fn seal(key: &str, value: &Value) -> Option<String> {
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes()).ok()?;
     let mut nonce = [0u8; 12];
     getrandom::fill(&mut nonce).ok()?;

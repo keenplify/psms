@@ -34,6 +34,42 @@ fn show_token(label: &str, token: String, window: &mut Window, cx: &mut App) {
             )
     });
 }
+/// Asks before a change, explaining what it will do; `apply` runs on confirm.
+fn confirm(
+    window: &mut Window,
+    cx: &mut Context<Dashboard>,
+    title: &'static str,
+    body: &'static str,
+    action: &'static str,
+    apply: impl Fn(&mut Dashboard, &mut Window, &mut Context<Dashboard>) + 'static,
+) {
+    let me = cx.entity();
+    let apply = std::rc::Rc::new(apply);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let me = me.clone();
+        let apply = apply.clone();
+        dialog
+            .title(title)
+            .w(px(520.))
+            .child(div().v_flex().gap_3().child(body))
+            .footer(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        button("confirm-cancel", "Cancel")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(Button::new("confirm-go").primary().label(action).on_click(
+                        move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let apply = apply.clone();
+                            me.update(cx, |s, cx| apply(s, window, cx));
+                        },
+                    )),
+            )
+    });
+}
 impl Dashboard {
     pub(super) fn access_view(&self, cx: &mut Context<Self>) -> Div {
         let mut view = div()
@@ -41,7 +77,7 @@ impl Dashboard {
             .gap_3()
             .min_w_0()
             .mb_5()
-            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.codes_view(cx)).child(self.relay_view(cx)).child(self.cloud_view(cx)).child(self.heading("Access tokens"));
+            .child(self.heading("Access tokens"));
         let mut choices = div().h_flex().gap_2().child(self.caption("Expiration"));
         for (index, (label, days)) in [("7 days", Some(7)), ("30 days", Some(30)), ("Never", None)]
             .into_iter()
@@ -220,48 +256,27 @@ impl Dashboard {
 
 impl Dashboard {
     /// Reply from anywhere: this Mac sends what you queue in any inbox, at home or away.
-    fn relay_view(&self, cx: &mut Context<Self>) -> Div {
-        let mut view = div()
-            .v_flex()
-            .gap_2()
-            .min_w_0()
-            .child(self.heading("Reply from anywhere"));
+    pub(super) fn relay_view(&self, cx: &mut Context<Self>) -> Div {
+        let mut view = div().v_flex().gap_2().min_w_0();
         if !replies::SUPPORTED {
-            return view.child(self.caption(
-                "Replies are sent by pSMS for Mac through the Messages app. Install it on a Mac that stays on, then reply from any browser, the CLI or an AI client.",
+            return view.child(self.setting_row(
+                "Reply from anywhere",
+                "Needs pSMS for Mac, which sends through Messages",
+                div(),
             ));
         }
         if let Some(status) = relay::status(&self.db) {
-            let checked = match status.checked_at {
-                Some(_) => "Checking for texts to send every few seconds.",
-                None => "Starting…",
+            let place = if status.base == relay::HOSTED {
+                "papamo.dev".to_string()
+            } else {
+                status.base.clone()
             };
-            view = view
-                .child(format!("Sending texts queued at {}", status.base))
-                .child(self.caption(format!(
-                    "{checked} {} sent from this Mac. Keep pSMS open and the Mac awake; texts wait in the outbox while it is off.",
-                    status.sent
-                )));
-            if let Some(error) = status.error {
-                view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
-            }
-            let at_login = relay::opens_at_login();
-            return view.child(
-                div().h_flex().gap_2().child(
-                    Button::new("relay-login")
-                        .label(if at_login { "Opens at login ✓" } else { "Open pSMS at login" })
-                        .on_click(cx.listener(move |s, _, _, cx| {
-                            s.notice = match relay::set_open_at_login(!at_login) {
-                                Ok(()) if at_login => "pSMS no longer opens at login.".into(),
-                                Ok(()) => "pSMS now opens at login, so queued texts send as soon as this Mac is back.".into(),
-                                Err(e) => e.into(),
-                            };
-                            cx.notify()
-                        })),
-                ).child(
+            view = view.child(
+                self.setting_row(
+                    "Reply from anywhere",
+                    format!("Sending replies for {place} · {} sent", status.sent),
                     Button::new("relay-stop")
-                        .icon(IconName::Ban)
-                        .label("Stop sending from this Mac")
+                        .label("Stop")
                         .on_click(cx.listener(|s, _, _, cx| {
                             relay::forget(&s.db);
                             s.notice = "This Mac no longer sends queued texts.".into();
@@ -269,9 +284,29 @@ impl Dashboard {
                         })),
                 ),
             );
+            if let Some(error) = status.error {
+                view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
+            }
+            let at_login = relay::opens_at_login();
+            return view.child(
+                self.setting_row(
+                    "Open at login",
+                    "So waiting replies send once this Mac is on",
+                    Button::new("relay-login")
+                        .label(if at_login { "Turn off" } else { "Turn on" })
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            if let Err(e) = relay::set_open_at_login(!at_login) {
+                                s.notice = e.into();
+                            }
+                            cx.notify()
+                        })),
+                ),
+            );
         }
-        view.child(self.caption(
-            "Sign in from any computer, reply in your inbox, and this Mac sends it through Messages while it is on. The recovery words and token stay in this Mac's Keychain.",
+        view.child(self.setting_row(
+            "Reply from anywhere",
+            "Write replies anywhere; this Mac sends them",
+            div(),
         ))
         .child(Input::new(&self.relay_words))
         .child(
@@ -281,18 +316,26 @@ impl Dashboard {
                 .child(
                     Button::new("relay-kit")
                         .icon(IconName::Folder)
-                        .label(if self.relay_kit.is_some() { "Recovery kit loaded" } else { "Or choose recovery kit PDF…" })
+                        .label(if self.relay_kit.is_some() {
+                            "Recovery kit loaded"
+                        } else {
+                            "Or choose recovery kit PDF…"
+                        })
                         .on_click(cx.listener(|s, _, w, cx| s.relay_choose_kit(w, cx))),
                 )
                 .child(
                     Button::new("relay-papamo")
                         .primary()
-                        .label(if self.relay_busy { "Waiting for sign-in…" } else { "Use my papamo.dev inbox" })
+                        .label(if self.relay_busy {
+                            "Waiting for sign-in…"
+                        } else {
+                            "Use my papamo.dev inbox"
+                        })
                         .disabled(self.relay_busy)
                         .on_click(cx.listener(|s, _, w, cx| s.relay_papamo(w, cx))),
                 ),
         )
-        .child(self.caption("Self-hosted, behind Cloudflare Tunnel, ngrok or similar:"))
+        .child(self.caption("Or a self-hosted server:"))
         .child(Input::new(&self.relay_url))
         .child(Input::new(&self.relay_token))
         .child(
@@ -423,81 +466,94 @@ impl Dashboard {
 }
 
 impl Dashboard {
-    /// papamo.dev Plus for this self-hosted archive: phones without a tunnel, an off-site backup,
-    /// the web inbox, teams and managed webhooks. Status is read here; changes go through the API.
-    fn cloud_view(&self, cx: &mut Context<Self>) -> Div {
-        let mut view = div()
-            .v_flex()
-            .gap_2()
-            .min_w_0()
-            .child(self.heading("papamo.dev Plus"));
-        if self.external {
-            return view.child(
-                self.caption("Connecting to papamo.dev works with the built-in SQLite archive."),
-            );
-        }
+    /// papamo.dev Plus for this self-hosted archive.
+    pub(super) fn cloud_view(&self, cx: &mut Context<Self>) -> Div {
         let link = self
             .db
             .query_row(
-                "SELECT last_sync, error, pushed, pulled FROM cloud_link WHERE id=1",
+                "SELECT error, pushed, pulled FROM cloud_link WHERE id=1",
                 [],
                 |r| {
                     Ok((
-                        r.get::<_, Option<i64>>(0)?,
-                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, i64>(1)?,
                         r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
                     ))
                 },
             )
             .ok();
-        let Some((synced, error, pushed, pulled)) = link else {
-            return view
-                .child(self.caption(
-                    "With a Plus plan, connect this archive to papamo.dev: your phone sends there with no tunnel, this archive keeps a sealed off-site backup, and you can read, reply and share it from any browser. Everything stays sealed with your archive key.",
-                ))
-                .child(
-                    div().h_flex().child(
-                        Button::new("cloud-connect")
-                            .primary()
-                            .label(if self.relay_busy { "Waiting for sign-in…" } else { "Connect to papamo.dev" })
-                            .disabled(self.relay_busy)
-                            .on_click(cx.listener(|s, _, w, cx| s.cloud_connect(w, cx))),
-                    ),
-                );
+        // Not syncing yet: "Where your texts live" offers Sync to web (Plus) instead.
+        let Some((error, pushed, pulled)) = link else {
+            return div();
         };
-        view = view
-            .child(format!(
-                "Connected · {pushed} backed up · {pulled} received from papamo.dev"
-            ))
-            .child(self.caption(match synced {
-                Some(_) => {
-                    "Syncing every few seconds. Phones can send to papamo.dev without a tunnel."
-                }
-                None => "Starting…",
-            }));
-        if let Some(error) = error {
-            view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
+        // Messages on this Mac not yet on papamo.dev, for the progress bar while it catches up.
+        let waiting: i64 = self
+            .db
+            .query_row(
+                "SELECT count(*) FROM messages WHERE id NOT IN (SELECT message_id FROM cloud_synced)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let total: i64 = self
+            .db
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+            .unwrap_or(0);
+        let mut view = div().v_flex().child(
+            self.setting_row(
+                "Sync with papamo.dev",
+                error.unwrap_or_else(|| {
+                    if waiting > 0 {
+                        format!("Backing up {} of {total}", total - waiting)
+                    } else {
+                        format!("Up to date · {pushed} backed up · {pulled} received")
+                    }
+                }),
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("cloud-restore")
+                            .label("Restore")
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.notice = match s.api().map(|a| a.restore_cloud()) {
+                                    Some(Ok(())) => "Restoring from papamo.dev.".into(),
+                                    _ => "Start the archive service, then try again.".into(),
+                                };
+                                cx.notify()
+                            })),
+                    )
+                    .child(
+                        Button::new("cloud-disconnect")
+                            .label("Disconnect")
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.notice = match s.api().map(|a| a.disconnect_cloud()) {
+                                    Some(Ok(())) => "Disconnected from papamo.dev.".into(),
+                                    _ => "Start the archive service, then try again.".into(),
+                                };
+                                cx.notify()
+                            })),
+                    ),
+            ),
+        );
+        if waiting > 0 && total > 0 {
+            let done = (total - waiting) as f32 / total as f32;
+            view = view.child(
+                div()
+                    .h(px(6.))
+                    .w_full()
+                    .rounded_full()
+                    .bg(rgb(if self.dark { 0x30353d } else { 0xe3e7ec }))
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded_full()
+                            .bg(rgb(0x3b82f6))
+                            .w(relative(done.clamp(0.02, 1.0))),
+                    ),
+            );
         }
-        view.child(
-            div()
-                .h_flex()
-                .gap_2()
-                .child(Button::new("cloud-restore").label("Restore from papamo.dev").on_click(cx.listener(|s, _, _, cx| {
-                    s.notice = match s.api().map(|a| a.restore_cloud()) {
-                        Some(Ok(())) => "Restoring: messages from papamo.dev are coming down now.".into(),
-                        _ => "Start the archive service, then try again.".into(),
-                    };
-                    cx.notify()
-                })))
-                .child(Button::new("cloud-disconnect").icon(IconName::Ban).label("Disconnect").on_click(cx.listener(|s, _, _, cx| {
-                    s.notice = match s.api().map(|a| a.disconnect_cloud()) {
-                        Some(Ok(())) => "Disconnected. Your papamo.dev copy stays until you delete it there.".into(),
-                        _ => "Start the archive service, then try again.".into(),
-                    };
-                    cx.notify()
-                }))),
-        )
+        view.min_w_0()
     }
     fn cloud_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(api) = self.api() else {
@@ -532,7 +588,12 @@ impl Dashboard {
                 window.activate_window();
                 s.notice = match result {
                     Ok(()) => "Connected. This archive now backs up to papamo.dev and receives what your phone sends there.".into(),
-                    Err(e) => e,
+                    Err(e) => {
+                        if e.contains("Plus") {
+                            cx.open_url("https://www.papamo.dev/sms#plans");
+                        }
+                        e
+                    }
                 };
                 cx.notify()
             });
@@ -542,45 +603,40 @@ impl Dashboard {
 }
 
 impl Dashboard {
-    /// One-time codes: a notification when a text with a code arrives, and Tab to type it.
-    fn codes_view(&self, cx: &mut Context<Self>) -> Div {
+    /// One-time codes: a notification when a code arrives, and Tab to type it.
+    pub(super) fn codes_view(&self, cx: &mut Context<Self>) -> Div {
         let on = otp::enabled(&self.db);
-        let mut view = div()
-            .v_flex()
-            .gap_2()
-            .min_w_0()
-            .child(self.heading("One-time codes"))
-            .child(self.caption(
-                "When a text with a verification code arrives, pSMS shows a notification. Press Tab within a minute to type the code into any app, or choose Copy code. Codes stay in memory only.",
-            ));
-        let mut row = div().h_flex().gap_2().child(
-            Button::new("codes-toggle")
-                .label(if on {
-                    "Turn off code notifications"
-                } else {
-                    "Turn on code notifications"
-                })
-                .on_click(cx.listener(move |s, _, _, cx| {
-                    if otp::set_enabled(&s.db, !on).is_err() {
-                        s.notice = "Could not save this setting.".into()
-                    }
-                    cx.notify()
-                })),
-        );
-        if on && replies::SUPPORTED && !otp::can_type() {
-            row = row.child(
-                Button::new("codes-allow")
-                    .primary()
-                    .label("Allow typing with Tab")
-                    .on_click(cx.listener(|s, _, _, cx| {
-                        otp::request_typing_permission();
-                        s.notice = "Turn on pSMS in Privacy & Security → Accessibility, then come back. Tab starts working right away.".into();
+        let mut view = div().v_flex().child(
+            self.setting_row(
+                "One-time codes",
+                "Notify when a code arrives; press Tab to type it",
+                Button::new("codes-toggle")
+                    .label(if on { "Turn off" } else { "Turn on" })
+                    .on_click(cx.listener(move |s, _, _, cx| {
+                        if otp::set_enabled(&s.db, !on).is_err() {
+                            s.notice = "Could not save this setting.".into()
+                        }
                         cx.notify()
                     })),
+            ),
+        );
+        if on && replies::SUPPORTED && !otp::can_type() {
+            view = view.child(
+                self.setting_row(
+                    "Typing with Tab",
+                    "Needs Accessibility permission",
+                    Button::new("codes-allow")
+                        .primary()
+                        .label("Allow")
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            otp::request_typing_permission();
+                            s.notice = "Turn on pSMS in Privacy & Security → Accessibility.".into();
+                            cx.notify()
+                        })),
+                ),
             );
-            view = view.child(self.caption("Typing with Tab needs Accessibility permission. The Copy and Type buttons on the notification work without it."));
         }
-        view.child(row)
+        view
     }
 }
 
@@ -661,5 +717,171 @@ impl Dashboard {
                         cx.notify()
                     })),
             )
+    }
+}
+
+impl Dashboard {
+    /// One setting: a title and a short line on the left, its control on the right.
+    pub(super) fn setting_row(
+        &self,
+        title: impl Into<SharedString>,
+        detail: impl Into<SharedString>,
+        control: impl IntoElement,
+    ) -> Div {
+        div()
+            .h_flex()
+            .gap_4()
+            .items_center()
+            .py_3()
+            .border_b_1()
+            .border_color(rgb(if self.dark { 0x30353d } else { 0xe3e7ec }))
+            .child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(title.into()))
+                    .child(self.caption(detail.into())),
+            )
+            .child(control)
+    }
+    pub(super) fn appearance_row(&self, cx: &mut Context<Self>) -> Div {
+        self.setting_row(
+            "Appearance",
+            if self.dark { "Dark" } else { "Light" },
+            Button::new("appearance")
+                .label(if self.dark { "Use light" } else { "Use dark" })
+                .on_click(cx.listener(|s, _, w, cx| {
+                    let dark = !s.dark;
+                    if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark", [dark]).is_ok() {
+                        s.dark = dark;
+                        Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(w), cx);
+                    } else {
+                        s.notice = "Could not save appearance.".into()
+                    }
+                    cx.notify()
+                })),
+        )
+    }
+    /// Names and photos from this Mac's Contacts for the people who text you.
+    pub(super) fn contacts_row(&self, cx: &mut Context<Self>) -> Div {
+        let on = mac_contacts::enabled(&self.db);
+        let detail = match mac_contacts::status(&self.db) {
+            Some((n, Some(_))) => format!("Names and photos for {n} people"),
+            Some(_) => "Matching your contacts…".to_string(),
+            None => "Names and photos from this Mac's Contacts".to_string(),
+        };
+        self.setting_row(
+            "Contacts",
+            detail,
+            Button::new("mac-contacts")
+                .label(if on { "Turn off" } else { "Turn on" })
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if mac_contacts::set_enabled(&s.db, !on).is_ok() {
+                        s.contacts_done.clear();
+                        s.contacts_full_at = None;
+                    }
+                    cx.notify()
+                })),
+        )
+    }
+}
+
+impl Dashboard {
+    /// Where your texts live: your papamo.dev inbox or this Mac's own archive, switchable both
+    /// ways, with Plus to sync a self-hosted archive to the web. Each switch is confirmed first.
+    pub(super) fn source_row(&self, cx: &mut Context<Self>) -> Div {
+        if self.hosted.is_some() {
+            return self.setting_row(
+                "Where your texts live",
+                "Your papamo.dev inbox",
+                Button::new("use-local")
+                    .label("Use this Mac instead")
+                    .on_click(cx.listener(|_, _, w, cx| {
+                        confirm(
+                            w,
+                            cx,
+                            "Show this Mac's archive?",
+                            "pSMS will show the archive stored on this Mac instead of your papamo.dev inbox. Your papamo.dev inbox and its messages stay as they are, and replies still go through this Mac. To fill this Mac's archive, connect a phone to it with Run setup again. You can switch back here at any time.",
+                            "Use this Mac",
+                            |s, _, cx| {
+                                if relay::set_prefers_local(&s.db, true).is_ok() {
+                                    s.hosted = None;
+                                    s.session_key = None;
+                                    s.external_page = None;
+                                    s.hosted_seen = None;
+                                    s.notice = "Showing this Mac's archive.".into();
+                                    s.refresh();
+                                }
+                                cx.notify()
+                            },
+                        )
+                    })),
+            );
+        }
+        let syncing = self
+            .db
+            .query_row("SELECT 1 FROM cloud_link WHERE id=1", [], |_| Ok(()))
+            .is_ok();
+        let mut controls = div().h_flex().gap_2();
+        if !self.external && !syncing {
+            controls = controls.child(
+                Button::new("source-plus")
+                    .primary()
+                    .label(if self.relay_busy { "Waiting…" } else { "Sync to web (Plus)" })
+                    .disabled(self.relay_busy)
+                    .on_click(cx.listener(|_, _, w, cx| {
+                        confirm(
+                            w,
+                            cx,
+                            "Sync this Mac's archive with papamo.dev?",
+                            "Your texts stay on this Mac, and a sealed copy goes to papamo.dev so you can read and reply in any browser, keep an off-site backup, and let your phone send there with no tunnel. Everything stays encrypted with your recovery words. This needs a Plus plan; your browser opens to sign in.",
+                            "Sign in and sync",
+                            |s, w, cx| s.cloud_connect(w, cx),
+                        )
+                    })),
+            );
+        }
+        controls = controls.child(
+            Button::new("use-hosted")
+                .label("Use papamo.dev")
+                .on_click(cx.listener(|_, _, w, cx| {
+                    confirm(
+                        w,
+                        cx,
+                        "Show your papamo.dev inbox?",
+                        "pSMS will show your papamo.dev inbox instead of the archive on this Mac. The archive on this Mac stays as it is, and you can switch back here at any time. If this Mac isn't connected to papamo.dev yet, setup opens so you can sign in.",
+                        "Use papamo.dev",
+                        |s, _, cx| {
+                            let _ = relay::set_prefers_local(&s.db, false);
+                            match relay::hosted_connection(&s.db) {
+                                Some(r) => {
+                                    s.session_key = Some(r.key().to_string());
+                                    s.hosted = Some(Arc::new(r));
+                                    s.hosted_seen = None;
+                                    s.notice = "Showing your papamo.dev inbox.".into();
+                                    s.refresh();
+                                }
+                                None => {
+                                    s.step = 0;
+                                    s.show(Screen::Setup, cx);
+                                    s.notice = "Sign in with Papamo, then choose your papamo.dev inbox.".into();
+                                }
+                            }
+                            cx.notify()
+                        },
+                    )
+                })),
+        );
+        self.setting_row(
+            "Where your texts live",
+            match (self.external, syncing) {
+                (true, _) => "Your own database",
+                (false, true) => "This Mac, synced with papamo.dev",
+                (false, false) => "This Mac",
+            },
+            controls,
+        )
     }
 }

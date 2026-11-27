@@ -26,7 +26,6 @@ pub struct Relay {
 pub static NEWEST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 pub struct Status {
     pub base: String,
-    pub checked_at: Option<i64>,
     pub sent: i64,
     pub error: Option<String>,
 }
@@ -277,6 +276,15 @@ impl Relay {
         )
         .map(drop)
     }
+    /// Saves a card read from this Mac's Contacts as the device's copy.
+    pub fn save_device_card(&self, contact: &str, envelope: String) -> Result<(), String> {
+        self.call(
+            reqwest::Method::PUT,
+            &format!("/contacts/{contact}/card"),
+            Some(json!({"envelope": envelope, "copy": "device"})),
+        )
+        .map(drop)
+    }
     /// Keeps a reply sent from this Mac in the papamo.dev inbox, sealed and already read.
     pub fn store_sent(&self, to: &str, text: &str) -> Result<(), String> {
         let (id, request) =
@@ -370,7 +378,6 @@ pub fn status(db: &Connection) -> Option<Status> {
         |r| {
             Ok(Status {
                 base: r.get(0)?,
-                checked_at: r.get(1)?,
                 sent: r.get(2)?,
                 error: r.get(3)?,
             })
@@ -380,9 +387,31 @@ pub fn status(db: &Connection) -> Option<Status> {
     .ok()
     .flatten()
 }
-/// The relay, when it serves a papamo.dev inbox: the desktop then shows that inbox.
+/// The relay, when it serves a papamo.dev inbox: the desktop then shows that inbox, unless
+/// you chose to show this Mac's own archive instead.
 pub fn hosted(db: &Connection) -> Option<Relay> {
+    if prefers_local(db) {
+        return None;
+    }
+    hosted_connection(db)
+}
+/// The papamo.dev connection, whichever archive is shown.
+pub fn hosted_connection(db: &Connection) -> Option<Relay> {
     load(db).filter(Relay::is_hosted)
+}
+pub fn prefers_local(db: &Connection) -> bool {
+    db.query_row("SELECT local FROM desktop_source WHERE id=1", [], |r| {
+        r.get(0)
+    })
+    .unwrap_or(false)
+}
+pub fn set_prefers_local(db: &Connection, local: bool) -> rusqlite::Result<()> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS desktop_source(id INTEGER PRIMARY KEY CHECK(id=1), local INTEGER NOT NULL)")?;
+    db.execute(
+        "INSERT INTO desktop_source(id,local) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET local=excluded.local",
+        [local],
+    )
+    .map(drop)
 }
 fn load(db: &Connection) -> Option<Relay> {
     let base = status(db)?.base;

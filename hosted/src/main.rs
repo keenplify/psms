@@ -387,6 +387,9 @@ async fn card_hint(
 #[derive(Deserialize)]
 struct Card {
     envelope: Option<String>,
+    /// "device" stores a card read from a device's address book as the phone's copy.
+    #[serde(default)]
+    copy: Option<String>,
 }
 fn valid_contact(id: &str) -> bool {
     id.len() == 64
@@ -420,8 +423,9 @@ async fn put_card(
         .map_err(|_| DOWN)?
         .map(|r| (r.get(0), r.get(1)))
         .ok_or(DENIED)?;
+    let device = card.copy.as_deref() == Some("device");
     let sql = match (scope.as_str(), card.envelope.is_some()) {
-        ("upload", true) => "INSERT INTO contact_cards(account_id,contact_id,phone_card,phone_updated_at) VALUES($1,$2,$3,now())
+        ("upload", true) | ("owner" | "computer", true) if scope == "upload" || device => "INSERT INTO contact_cards(account_id,contact_id,phone_card,phone_updated_at) VALUES($1,$2,$3,now())
              ON CONFLICT(account_id,contact_id) DO UPDATE SET phone_card=excluded.phone_card, phone_updated_at=now()",
         ("owner" | "computer", true) => "INSERT INTO contact_cards(account_id,contact_id,manual_card,manual_updated_at) VALUES($1,$2,$3,now())
              ON CONFLICT(account_id,contact_id) DO UPDATE SET manual_card=excluded.manual_card, manual_updated_at=now()",

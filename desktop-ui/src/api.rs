@@ -91,6 +91,15 @@ impl Api {
         )
         .map(drop)
     }
+    /// Saves a card read from this Mac's Contacts as the device's copy.
+    pub fn save_device_card(&self, contact: &str, envelope: String) -> Result<(), ()> {
+        self.call(
+            reqwest::Method::PUT,
+            &format!("/contacts/{contact}/card"),
+            Some(json!({"envelope": envelope, "copy": "device"})),
+        )
+        .map(drop)
+    }
     /// Connects this archive to papamo.dev Plus with a computer token.
     pub fn connect_cloud(&self, token: &str) -> Result<(), ()> {
         self.call(

@@ -192,4 +192,8 @@ END $$;
 DROP TRIGGER IF EXISTS archived_messages_webhooks ON archived_messages;
 CREATE TRIGGER archived_messages_webhooks AFTER INSERT ON archived_messages
  FOR EACH ROW EXECUTE FUNCTION queue_hosted_webhooks();
+-- Cards sent before the fixed pSMS shortcut (27 Nov 2026) may lack the name and photo; ask
+-- phones for them again. Re-running changes nothing new.
+UPDATE contact_cards SET phone_updated_at = NULL
+ WHERE phone_updated_at < '2026-11-27 09:00:00+00';
 COMMIT;

@@ -14,6 +14,7 @@ mod hook_store;
 mod hosted_login;
 #[path = "../../src/kit.rs"]
 mod kit;
+mod mac_contacts;
 #[path = "../../src/onboard.rs"]
 mod onboard;
 mod otp;
@@ -89,6 +90,14 @@ struct Dashboard {
     /// The Plus banner: closed for this session, and the "Don't show again" box.
     upsell_closed: bool,
     upsell_never: bool,
+    /// The conversation pane's scroll, kept at the newest message as messages arrive or are sent.
+    reading_scroll: ScrollHandle,
+    settings_search: Entity<InputState>,
+    settings_path: PathBuf,
+    /// Senders already matched to this Mac's Contacts this session, and when all were last.
+    contacts_done: std::collections::HashSet<String>,
+    contacts_full_at: Option<std::time::Instant>,
+    reading_shown: std::cell::RefCell<(Option<String>, usize)>,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -151,6 +160,35 @@ fn button(id: &'static str, label: &'static str) -> Button {
     b.icon(icon)
 }
 impl Dashboard {
+    /// Installs the downloaded update and restarts pSMS.
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        let Some(selected) = self.update.clone() else {
+            return;
+        };
+        self.updating = true;
+        cx.notify();
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let ok = cx
+                .background_executor()
+                .spawn(async move {
+                    setup::cli(&path)
+                        .and_then(|mut cmd| cmd.args(["update", "--restart", &selected]).output())
+                        .is_ok_and(|o| o.status.success())
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                if ok {
+                    cx.quit()
+                } else {
+                    s.updating = false;
+                    s.notice = "Could not apply the update. Try again or run psms update.".into();
+                    cx.notify()
+                }
+            });
+        })
+        .detach()
+    }
     fn check_updates(&mut self, cx: &mut Context<Self>) {
         if self.checking || self.updating {
             return;
@@ -231,6 +269,52 @@ impl Dashboard {
             .child(text.into())
     }
 
+    /// The next batch of senders to match with this Mac's Contacts: everyone every 30 minutes,
+    /// and anyone new in between.
+    #[allow(clippy::type_complexity)]
+    fn contacts_job(
+        &mut self,
+    ) -> Option<(
+        Vec<String>,
+        String,
+        PathBuf,
+        Option<Arc<relay::Relay>>,
+        Option<api::Api>,
+    )> {
+        if !mac_contacts::enabled(&self.db) {
+            return None;
+        }
+        let key = self.session_key.clone()?;
+        let senders: Vec<String> = self
+            .threads
+            .iter()
+            .map(|t| t.title.clone())
+            .filter(|t| mac_contacts::number_key(t).is_some())
+            .collect();
+        let due = self
+            .contacts_full_at
+            .is_none_or(|t| t.elapsed() > Duration::from_secs(1800));
+        let batch: Vec<String> = if due {
+            self.contacts_full_at = Some(std::time::Instant::now());
+            senders
+        } else {
+            senders
+                .into_iter()
+                .filter(|s| !self.contacts_done.contains(s))
+                .collect()
+        };
+        if batch.is_empty() {
+            return None;
+        }
+        self.contacts_done.extend(batch.iter().cloned());
+        Some((
+            batch,
+            key,
+            self.settings_path.clone(),
+            self.hosted.clone(),
+            self.api(),
+        ))
+    }
     /// Announces one-time codes in texts that arrived since the last check.
     fn check_codes(&mut self) {
         if self.external || self.hosted.is_some() {
@@ -1314,12 +1398,18 @@ impl Dashboard {
             )
         }
         if let Some(t) = thread {
+            let shown = (Some(t.key.clone()), t.items.len());
+            if *self.reading_shown.borrow() != shown {
+                *self.reading_shown.borrow_mut() = shown;
+                self.reading_scroll.scroll_to_bottom();
+            }
             let mut feed = div()
                 .id("reading-pane")
                 .v_flex()
                 .min_h_0()
                 .flex_1()
                 .overflow_y_scroll()
+                .track_scroll(&self.reading_scroll)
                 .p_6()
                 .gap_4();
             for (i, m) in t.items.iter().rev().enumerate() {
@@ -1568,20 +1658,20 @@ impl Render for Dashboard {
             .text_color(self.color(INK))
             .child(div().flex_1().min_h_0().child(layout));
         if let Some(version) = &self.update {
-            root=root.child(div().h_flex().gap_3().px_4().py_2().items_center()
-                .child(format!("pSMS {version} is ready to install."))
-                .child(button("apply-update","Restart to update").disabled(self.updating)
-                .on_click(cx.listener(|s,_,_,cx|{
-                    let Some(selected)=s.update.clone() else{return};
-s.updating=true;cx.notify();
-                    let path=s.path.clone();
-                    cx.spawn(async move|this,cx|{
-                        let ok=cx.background_executor().spawn(async move{
-                            setup::cli(&path).and_then(|mut cmd|cmd.args(["update","--restart",&selected]).output()).is_ok_and(|o|o.status.success())
-                        }).await;
-                        let _=this.update(cx,|s,cx|{if ok{cx.quit()}else{s.updating=false;s.notice="Could not apply the update. Try again or run psms update.".into();cx.notify()}});
-                    }).detach()
-                }))));
+            root = root.child(
+                div()
+                    .h_flex()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
+                    .items_center()
+                    .child(format!("pSMS {version} is ready to install."))
+                    .child(
+                        button("apply-update", "Restart to update")
+                            .disabled(self.updating)
+                            .on_click(cx.listener(|s, _, _, cx| s.apply_update(cx))),
+                    ),
+            );
         }
         if !self.notice.is_empty() {
             root = root.child(
@@ -1752,6 +1842,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputState::new(window, cx).placeholder("https://example.com/webhook")
                     });
                     let hook_token = cx.new(|cx| InputState::new(window, cx).masked(true));
+                    let settings_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search settings"));
                     let relay_words = cx.new(|cx| {
                         InputState::new(window, cx).masked(true).placeholder("Your 12 recovery words")
                     });
@@ -1763,7 +1854,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     cx.new(|cx: &mut Context<Dashboard>| {
                         // Inputs only redraw when their owner does, so re-render on every edit.
-                        for field in [&search, &reply].into_iter().chain(card_fields.iter()) {
+                        for field in [&search, &reply, &settings_search].into_iter().chain(card_fields.iter()) {
                             cx.subscribe(
                                 field,
                                 |_, _, event: &gpui_kit::component::input::InputEvent, cx| {
@@ -1840,6 +1931,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         {
                                             break;
                                         }
+                                    }
+                                }
+                                // Names and photos from this Mac's Contacts for new senders.
+                                if let Ok(Some((senders, key, settings, hosted, api))) =
+                                    this.update(cx, |s, _| s.contacts_job())
+                                {
+                                    let result = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            let db = Connection::open(&settings).map_err(|_| "Could not open settings.".to_string())?;
+                                            mac_contacts::sync(&db, &key, &senders, |id, envelope| match (&hosted, &api) {
+                                                (Some(h), _) => h.save_device_card(id, envelope),
+                                                (None, Some(a)) => a
+                                                    .save_device_card(id, envelope)
+                                                    .map_err(|_| "Could not save a contact card.".to_string()),
+                                                (None, None) => Err("Start the archive service to save contacts.".to_string()),
+                                            })
+                                        })
+                                        .await;
+                                    if this
+                                        .update(cx, |s, cx| {
+                                            if let Err(e) = result {
+                                                s.notice = e;
+                                            }
+                                            s.hosted_seen = None;
+                                            s.refresh();
+                                            cx.notify();
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
                                 let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
@@ -1933,6 +2055,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             pending_hosted: None,
                             upsell_closed: false,
                             upsell_never: false,
+                            reading_scroll: ScrollHandle::new(),
+                            settings_search,
+                            settings_path: settings_path.clone(),
+                            contacts_done: Default::default(),
+                            contacts_full_at: None,
+                            reading_shown: Default::default(),
                             expiry: Some(30),
                             unlock_box: false,
                             notice: String::new(),

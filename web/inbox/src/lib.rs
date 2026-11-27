@@ -12,6 +12,9 @@ thread_local! {
 struct Transcript {
     messages: Vec<Line>,
     dark: bool,
+    /// Keeps the newest message in view when a conversation opens or a message arrives.
+    #[serde(skip)]
+    scroll: ScrollHandle,
 }
 #[derive(Deserialize)]
 struct Line {
@@ -48,6 +51,7 @@ impl Render for Transcript {
             .id("messages")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .bg(rgb(bg))
             .text_color(rgb(ink))
             .font_family("IBM Plex Sans")
@@ -148,7 +152,14 @@ pub fn set_transcript(data: &str) -> Result<bool, JsValue> {
             if let (Some(app), Some(view)) = (app.as_ref(), view.as_ref()) {
                 app.update(|cx| {
                     view.update(cx, |state, cx| {
+                        let last = |t: &Transcript| t.messages.last().map(|l| (l.body.clone(), l.status.clone()));
+                        let moved = state.messages.len() != messages.messages.len() || last(state) != last(&messages);
+                        let scroll = state.scroll.clone();
                         *state = messages;
+                        state.scroll = scroll;
+                        if moved {
+                            state.scroll.scroll_to_bottom();
+                        }
                         cx.notify()
                     })
                 });
