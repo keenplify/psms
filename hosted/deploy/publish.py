@@ -22,6 +22,9 @@ routes = """    location = /free/v1/auth/register {
     }
     location ^~ /free/v1/ { proxy_pass http://127.0.0.1:47833; }
 """
+# Contact cards carry a small photo, so they get a larger body limit than the rest of the API.
+cards = "    location ^~ /free/v1/contacts/ { client_max_body_size 512k; proxy_pass http://127.0.0.1:47833; }\n"
+general = "    location ^~ /free/v1/ { proxy_pass http://127.0.0.1:47833; }\n"
 if routes not in old and old.count(anchor) != 1:
     raise SystemExit("unexpected pSMS nginx layout")
 if zones.exists() and zones.read_text() != limits:
@@ -29,8 +32,13 @@ if zones.exists() and zones.read_text() != limits:
 existed = zones.exists()
 try:
     zones.write_text(limits)
-    if routes not in old:
-        site.write_text(old.replace(anchor,routes+anchor))
+    text = old if routes in old else old.replace(anchor,routes+anchor)
+    if cards not in text:
+        if text.count(general) != 1:
+            raise SystemExit("unexpected pSMS nginx layout")
+        text = text.replace(general,cards+general)
+    if text != old:
+        site.write_text(text)
     subprocess.run(["nginx","-t"],check=True)
     subprocess.run(["systemctl","reload","nginx"],check=True)
 except Exception:
