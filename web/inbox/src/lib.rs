@@ -23,10 +23,11 @@ impl Render for Transcript {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < px(500.);
         let dark = self.dark;
+        // Messages-style colours: grey incoming bubbles, muted centred times.
         let (bg, ink, muted, bubble) = if dark {
-            (0x191b20, 0xf3f4f7, 0xb5bdca, 0x30353d)
+            (0x191b20, 0xf5f5f7, 0x98989d, 0x3a3a3c)
         } else {
-            (0xffffff, 0x20232b, 0x465364, 0xeef0f4)
+            (0xffffff, 0x111111, 0x8e8e93, 0xe9e9eb)
         };
         let mut list = div()
             .id("messages")
@@ -35,26 +36,32 @@ impl Render for Transcript {
             .bg(rgb(bg))
             .text_color(rgb(ink))
             .font_family("IBM Plex Sans")
-            .p(if compact { px(12.) } else { px(24.) });
+            .p(if compact { px(12.) } else { px(20.) });
         for line in &self.messages {
+            // The page sends a time only where the conversation resumes after a gap.
+            if !line.time.is_empty() {
+                list = list.child(
+                    div()
+                        .flex()
+                        .justify_center()
+                        .mt_4()
+                        .mb_2()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(muted))
+                        .child(line.time.clone()),
+                );
+            }
             list = list.child(
-                div()
-                    .mb_4()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(muted))
-                            .mb_1()
-                            .child(line.time.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(640.))
-                            .p_3()
-                            .bg(rgb(bubble))
-                            .rounded_lg()
-                            .child(line.body.clone()),
-                    ),
+                div().flex().mb_1().child(
+                    div()
+                        .max_w(if compact { px(280.) } else { px(560.) })
+                        .px_3()
+                        .py_2()
+                        .bg(rgb(bubble))
+                        .rounded(px(18.))
+                        .child(line.body.clone()),
+                ),
             );
         }
         list

@@ -3,7 +3,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use deadpool_postgres::{Manager, Pool};
 use serde::Deserialize;
@@ -176,7 +176,7 @@ async fn store(
     State(a): State<App>,
     h: HeaderMap,
     Json(m): Json<Message>,
-) -> Result<StatusCode, Failure> {
+) -> Result<(StatusCode, Json<Value>), Failure> {
     let user = identity(&a, &h, true).await?;
     if !encryption::accepts(&m.sender, &m.body)
         || m.contact_id
@@ -193,7 +193,7 @@ async fn store(
         .await
         .map_err(|_| DOWN)?;
     if let Some(row)=tx.query_opt("SELECT sender=$3 AND body=$4 AND contact_id IS NOT DISTINCT FROM $5 FROM archived_messages WHERE account_id=$1 AND id=$2",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?{
- return if row.get::<_,bool>(0){Ok(StatusCode::OK)}else{Err(StatusCode::CONFLICT)}
+ return if row.get::<_,bool>(0){Ok((StatusCode::OK, Json(card_hint(&tx, user, contact.as_deref()).await?)))}else{Err(StatusCode::CONFLICT)}
  }
     let full: bool = tx.query_one(
         "SELECT CASE WHEN message_limit IS NULL THEN false ELSE
@@ -213,8 +213,109 @@ async fn store(
     tx.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
         .await
         .map_err(|_| DOWN)?;
+    let hint = card_hint(&tx, user, contact.as_deref()).await?;
     tx.commit().await.map_err(|_| DOWN)?;
-    Ok(StatusCode::CREATED)
+    Ok((StatusCode::CREATED, Json(hint)))
+}
+/// Asks the phone for a contact card when it has none for this sender or its copy is stale.
+/// Decided from timestamps alone; the server never reads a card.
+async fn card_hint(
+    db: &impl deadpool_postgres::GenericClient,
+    user: i64,
+    contact: Option<&str>,
+) -> Result<Value, Failure> {
+    let Some(contact) = contact else {
+        return Ok(json!({}));
+    };
+    let fresh: bool = db
+        .query_opt(
+            "SELECT phone_updated_at > now() - interval '30 days' FROM contact_cards WHERE account_id=$1 AND contact_id=$2",
+            &[&user, &contact],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .and_then(|r| r.get::<_, Option<bool>>(0))
+        .unwrap_or(false);
+    Ok(if fresh {
+        json!({})
+    } else {
+        json!({"contact_card": "wanted"})
+    })
+}
+#[derive(Deserialize)]
+struct Card {
+    envelope: Option<String>,
+}
+fn valid_contact(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+/// A phone saves its address-book copy with its upload token; an inbox saves edits with the
+/// owner session. An empty envelope from an inbox clears the edits.
+async fn put_card(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path(contact): Path<String>,
+    Json(card): Json<Card>,
+) -> Result<StatusCode, Failure> {
+    if !valid_contact(&contact)
+        || card
+            .envelope
+            .as_ref()
+            .is_some_and(|e| e.len() > 400_000 || !encryption::accepts(encryption::ACTIONS, e))
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let (user, scope): (i64, String) = db
+        .query_opt(
+            "SELECT account_id, scope FROM sessions WHERE digest=$1 AND expires_at>now()",
+            &[&bearer(&h)?],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .map(|r| (r.get(0), r.get(1)))
+        .ok_or(DENIED)?;
+    let sql = match (scope.as_str(), card.envelope.is_some()) {
+        ("upload", true) => "INSERT INTO contact_cards(account_id,contact_id,phone_card,phone_updated_at) VALUES($1,$2,$3,now())
+             ON CONFLICT(account_id,contact_id) DO UPDATE SET phone_card=excluded.phone_card, phone_updated_at=now()",
+        ("owner", true) => "INSERT INTO contact_cards(account_id,contact_id,manual_card,manual_updated_at) VALUES($1,$2,$3,now())
+             ON CONFLICT(account_id,contact_id) DO UPDATE SET manual_card=excluded.manual_card, manual_updated_at=now()",
+        ("owner", false) => "UPDATE contact_cards SET manual_card=NULL, manual_updated_at=now() WHERE account_id=$1 AND contact_id=$2 AND $3::text IS NULL",
+        _ => return Err(StatusCode::UNPROCESSABLE_ENTITY),
+    };
+    db.execute(sql, &[&user, &contact, &card.envelope])
+        .await
+        .map_err(|_| DOWN)?;
+    db.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn cards(State(a): State<App>, h: HeaderMap) -> Reply {
+    let user = identity(&a, &h, false).await?;
+    let rows = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .query(
+            "SELECT contact_id, phone_card, floor(extract(epoch FROM phone_updated_at))::bigint,
+                    manual_card, floor(extract(epoch FROM manual_updated_at))::bigint
+             FROM contact_cards WHERE account_id=$1 AND (phone_card IS NOT NULL OR manual_card IS NOT NULL)",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(Json(json!({"cards": rows.iter().map(|r| json!({
+        "contact_id": r.get::<_, String>(0),
+        "phone_card": r.get::<_, Option<String>>(1),
+        "phone_updated_at": r.get::<_, Option<i64>>(2),
+        "manual_card": r.get::<_, Option<String>>(3),
+        "manual_updated_at": r.get::<_, Option<i64>>(4),
+    })).collect::<Vec<_>>()})))
 }
 #[derive(Deserialize)]
 struct Page {
@@ -380,6 +481,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/phones/{id}", delete(remove_phone))
         .route("/messages", get(list).post(store))
         .route("/messages/read", post(mark_read))
+        .route("/contacts/cards", get(cards))
+        .route(
+            "/contacts/{id}/card",
+            put(put_card).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
         .route("/messages/{id}", delete(remove))
         .route("/events", get(browser::inbox_events))
         .layer(DefaultBodyLimit::max(64 * 1024))
