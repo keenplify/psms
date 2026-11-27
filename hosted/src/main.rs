@@ -1,6 +1,9 @@
 mod browser;
 mod outbox;
 mod plans;
+mod sync;
+mod teams;
+mod webhooks;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -127,9 +130,28 @@ async fn throttle(
     }
     response
 }
+/// The account a request acts on. Team members name the shared inbox with `x-psms-inbox`;
+/// they act on it only while they are members and its plan includes teams.
 pub(crate) async fn identity(app: &App, h: &HeaderMap, upload: bool) -> Result<i64, Failure> {
     let db = app.pool.get().await.map_err(|_| DOWN)?;
-    db.query_opt("SELECT account_id FROM sessions WHERE digest=$1 AND expires_at>now() AND (scope IN ('owner','computer') OR $2)",&[&bearer(h)?,&upload]).await.map_err(|_|DOWN)?.map(|r|r.get(0)).ok_or(DENIED)
+    let me: i64 = db.query_opt("SELECT account_id FROM sessions WHERE digest=$1 AND expires_at>now() AND (scope IN ('owner','computer') OR $2)",&[&bearer(h)?,&upload]).await.map_err(|_|DOWN)?.map(|r|r.get(0)).ok_or(DENIED)?;
+    let Some(inbox) = h
+        .get("x-psms-inbox")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|inbox| *inbox != me)
+    else {
+        return Ok(me);
+    };
+    db.query_opt(
+        "SELECT 1 FROM account_members m JOIN archive_quota q ON q.id=m.owner_id
+         WHERE m.owner_id=$1 AND m.member_id=$2 AND q.teams",
+        &[&inbox, &me],
+    )
+    .await
+    .map_err(|_| DOWN)?
+    .map(|_| inbox)
+    .ok_or(StatusCode::FORBIDDEN)
 }
 fn new_token() -> (String, Vec<u8>) {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -401,9 +423,9 @@ async fn put_card(
     let sql = match (scope.as_str(), card.envelope.is_some()) {
         ("upload", true) => "INSERT INTO contact_cards(account_id,contact_id,phone_card,phone_updated_at) VALUES($1,$2,$3,now())
              ON CONFLICT(account_id,contact_id) DO UPDATE SET phone_card=excluded.phone_card, phone_updated_at=now()",
-        ("owner", true) => "INSERT INTO contact_cards(account_id,contact_id,manual_card,manual_updated_at) VALUES($1,$2,$3,now())
+        ("owner" | "computer", true) => "INSERT INTO contact_cards(account_id,contact_id,manual_card,manual_updated_at) VALUES($1,$2,$3,now())
              ON CONFLICT(account_id,contact_id) DO UPDATE SET manual_card=excluded.manual_card, manual_updated_at=now()",
-        ("owner", false) => "UPDATE contact_cards SET manual_card=NULL, manual_updated_at=now() WHERE account_id=$1 AND contact_id=$2 AND $3::text IS NULL",
+        ("owner" | "computer", false) => "UPDATE contact_cards SET manual_card=NULL, manual_updated_at=now() WHERE account_id=$1 AND contact_id=$2 AND $3::text IS NULL",
         _ => return Err(StatusCode::UNPROCESSABLE_ENTITY),
     };
     db.execute(sql, &[&user, &contact, &card.envelope])
@@ -624,6 +646,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .trim()
         .to_owned(),
     };
+    webhooks::start(app.clone());
     let api = Router::new()
         .route("/readyz", get(ready))
         .route("/auth/exchange", post(exchange))
@@ -639,6 +662,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/admin/plans", get(plans::admin_list))
         .route("/admin/plans/{id}", put(plans::admin_save))
         .route("/admin/accounts", get(plans::admin_accounts))
+        .route("/sync/push", post(sync::push))
+        .route("/sync/pull", get(sync::pull))
+        .route("/team", get(teams::list).post(teams::add))
+        .route("/team/{id}", delete(teams::remove))
+        .route("/webhooks", get(webhooks::list).post(webhooks::add))
+        .route("/webhooks/{id}", delete(webhooks::remove))
+        .route("/webhooks/deliveries", get(webhooks::log))
+        .route("/webhooks/deliveries/{id}/replay", post(webhooks::replay))
         .route("/admin/accounts/{id}/plan", put(plans::admin_assign))
         .route("/pair", post(pair))
         .route("/computers", post(computer))

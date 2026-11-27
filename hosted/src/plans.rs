@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 const FRESH: Duration = Duration::from_secs(300);
-const COLUMNS: &str = "id,name,message_limit,api_calls_per_30_min,monthly_price_cents,available,webhooks,price_label,perks,max_phones,replies,autofill";
+const COLUMNS: &str = "id,name,message_limit,api_calls_per_30_min,monthly_price_cents,available,webhooks,price_label,perks,max_phones,replies,autofill,self_host_sync,teams";
 
 #[derive(Default)]
 pub struct Cache(std::sync::Mutex<Option<(Instant, Value)>>);
@@ -43,6 +43,7 @@ fn row(r: &tokio_postgres::Row) -> Value {
         "webhooks": r.get::<_, bool>(6), "price_label": r.get::<_, Option<String>>(7),
         "perks": r.get::<_, Vec<String>>(8), "max_phones": r.get::<_, Option<i32>>(9),
         "replies": r.get::<_, bool>(10), "autofill": r.get::<_, bool>(11),
+        "self_host_sync": r.get::<_, bool>(12), "teams": r.get::<_, bool>(13),
     })
 }
 async fn load(a: &App) -> Result<Value, Failure> {
@@ -86,6 +87,9 @@ pub struct Gates {
     pub replies: bool,
     pub autofill: bool,
     pub admin: bool,
+    pub webhooks: bool,
+    pub self_host_sync: bool,
+    pub teams: bool,
 }
 pub async fn gates(a: &App, user: i64) -> Result<Gates, Failure> {
     let r = a
@@ -94,7 +98,7 @@ pub async fn gates(a: &App, user: i64) -> Result<Gates, Failure> {
         .await
         .map_err(|_| DOWN)?
         .query_one(
-            "SELECT max_phones, replies, autofill, admin FROM archive_quota WHERE id=$1",
+            "SELECT max_phones, replies, autofill, admin, webhooks, self_host_sync, teams FROM archive_quota WHERE id=$1",
             &[&user],
         )
         .await
@@ -104,6 +108,9 @@ pub async fn gates(a: &App, user: i64) -> Result<Gates, Failure> {
         replies: r.get(1),
         autofill: r.get(2),
         admin: r.get(3),
+        webhooks: r.get(4),
+        self_host_sync: r.get(5),
+        teams: r.get(6),
     })
 }
 /// Refuses a feature the plan does not include, with a message an inbox can show.
@@ -142,6 +149,8 @@ pub struct Edit {
     max_phones: Option<i32>,
     replies: bool,
     autofill: bool,
+    self_host_sync: bool,
+    teams: bool,
 }
 pub async fn admin_save(
     State(a): State<App>,
@@ -180,12 +189,14 @@ pub async fn admin_save(
         .query_opt(
             &format!(
                 "UPDATE plans SET name=$2, message_limit=$3, api_calls_per_30_min=$4, monthly_price_cents=$5,
-                   available=$6, webhooks=$7, price_label=$8, perks=$9, max_phones=$10, replies=$11, autofill=$12
+                   available=$6, webhooks=$7, price_label=$8, perks=$9, max_phones=$10, replies=$11, autofill=$12,
+                   self_host_sync=$13, teams=$14
                  WHERE id=$1 RETURNING {COLUMNS}"
             ),
             &[
                 &id, &e.name.trim(), &e.message_limit, &e.api_calls_per_30_min, &e.monthly_price_cents,
                 &e.available, &e.webhooks, &label, &perks, &e.max_phones, &e.replies, &e.autofill,
+                &e.self_host_sync, &e.teams,
             ],
         )
         .await
@@ -224,7 +235,7 @@ pub async fn admin_accounts(
         .map_err(|_| DOWN)?
         .query(
             "SELECT a.id, coalesce(a.display_name, a.username), a.plan,
-               (SELECT count(*) FROM archived_messages m WHERE m.account_id=a.id), q.admin
+               (SELECT count(*) FROM archived_messages m WHERE m.account_id=a.id), q.admin, a.message_limit_override
              FROM accounts a JOIN archive_quota q USING(id)
              WHERE $1 = '%%' OR lower(coalesce(a.display_name,'')) LIKE $1 OR lower(a.username) LIKE $1 OR a.id::text = $2
              ORDER BY a.id DESC LIMIT 50",
@@ -235,12 +246,16 @@ pub async fn admin_accounts(
     Ok(Json(json!({"accounts": rows.iter().map(|r| json!({
         "id": r.get::<_, i64>(0), "name": r.get::<_, String>(1), "plan": r.get::<_, String>(2),
         "messages": r.get::<_, i64>(3), "admin": r.get::<_, bool>(4),
+        "message_limit_override": r.get::<_, Option<i64>>(5),
     })).collect::<Vec<_>>()})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Assign {
     plan: String,
+    /// A custom message capacity for this account, such as for Enterprise; null uses the plan's.
+    #[serde(default)]
+    message_limit: Option<i64>,
 }
 /// Moves an account to a plan by hand, such as after a payment or for a trial.
 pub async fn admin_assign(
@@ -250,14 +265,19 @@ pub async fn admin_assign(
     Json(p): Json<Assign>,
 ) -> Result<StatusCode, Failure> {
     admin(&a, &h).await?;
+    if p.message_limit
+        .is_some_and(|l| !(1..=100_000_000).contains(&l))
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     let changed = a
         .pool
         .get()
         .await
         .map_err(|_| DOWN)?
         .execute(
-            "UPDATE accounts SET plan=$2 WHERE id=$1 AND EXISTS (SELECT 1 FROM plans WHERE id=$2)",
-            &[&id, &p.plan],
+            "UPDATE accounts SET plan=$2, message_limit_override=$3 WHERE id=$1 AND EXISTS (SELECT 1 FROM plans WHERE id=$2)",
+            &[&id, &p.plan, &p.message_limit],
         )
         .await
         .map_err(|_| DOWN)?;

@@ -91,4 +91,20 @@ impl Api {
         )
         .map(drop)
     }
+    /// Connects this archive to papamo.dev Pro with a computer token.
+    pub fn connect_cloud(&self, token: &str) -> Result<(), ()> {
+        self.call(
+            reqwest::Method::PUT,
+            "/cloud",
+            Some(json!({"token": token})),
+        )
+        .map(drop)
+    }
+    pub fn disconnect_cloud(&self) -> Result<(), ()> {
+        self.call(reqwest::Method::DELETE, "/cloud", None).map(drop)
+    }
+    pub fn restore_cloud(&self) -> Result<(), ()> {
+        self.call(reqwest::Method::POST, "/cloud/restore", None)
+            .map(drop)
+    }
 }

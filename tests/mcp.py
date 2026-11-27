@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as root:
    if "id" in msg:return json.loads(p.stdout.readline())["result"]
   res=call(dict(id=1,method="initialize",params={"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}));assert "tools" in res["capabilities"]
   call(dict(method="notifications/initialized"))
-  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status"}
+  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status","cloud_status"}
   def tool(id,name,arguments):
    res=call(dict(id=id,method="tools/call",params={"name":name,"arguments":arguments}))
    return json.loads(res["content"][0]["text"])
@@ -78,6 +78,8 @@ with tempfile.TemporaryDirectory() as root:
    if dev("/outbox",key,{"to":"1","body":"x"})[0]==0:break
    time.sleep(0.25)
   else:raise AssertionError("device API still listening")
+  assert tool(22,"cloud_status",{})=={"connected":False}
+  assert json.loads(manage("cloud","status"))=={"connected":False}
   p.stdin.close();p.wait(10);assert p.returncode==0
   print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status, MCP writes, the outbox and the devices-only send API")
  finally:subprocess.run(cli+["stop"],check=True,stdout=subprocess.DEVNULL)

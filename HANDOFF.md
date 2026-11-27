@@ -97,6 +97,9 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Hosted archive | Yes | Gap: desktop opens self-hosted archives only | Gap | Gap |
 | Reply from a conversation | Yes: sealed in the browser, queued for pSMS for Mac | Yes on Mac, through Messages | `outbox send` | `send_message` |
 | Reply from anywhere (Mac at home sends) | Queues; shows waiting, sending, failed | Settings → Reply from anywhere: papamo.dev or any self-hosted URL | `outbox send`, `status` (local archive) | `send_message`, `outbox_status` |
+| Connect a self-hosted archive to papamo.dev (Pro) | Reads and replies to the synced copy | Settings → papamo.dev Pro (connect, restore, disconnect) | `manage cloud connect/status/restore/disconnect` | `cloud_status` |
+| Team inboxes (Pro) | Settings → Team inboxes; open a shared inbox | Gap: desktop opens self-hosted archives only | Gap | Gap |
+| Managed webhooks (Pro) | Settings → Webhooks, delivery log, retry | Gap: self-hosted keeps its own webhooks in Settings | Gap | Gap |
 | Devices-only send API (LAN, Tailscale) | — (hosted) | Settings → Your devices, send key | `manage devices`, `access create send` | — (configuration) |
 
 ## Product scope
@@ -114,6 +117,15 @@ Hosted accounts have a plan (`accounts.plan` → `plans`): Free, Plus and Enterp
 - API throttle (`throttle` in `hosted/src/main.rs`): counts requests made with computer tokens per account in 30-minute windows, with `x-ratelimit-*` headers and 429 plus `Retry-After`. The signed-in inbox, phone uploads and the Mac relay's claim and result calls are not counted.
 - `GET /free/v1/plans` is public and cached (five minutes in memory and `Cache-Control: public, max-age=300`); papamo.dev/sms renders it with five-minute revalidation. Admins edit plans in the inbox (Account → Edit plans), through `GET/PUT /free/v1/admin/plans[/{id}]`; saving clears the server cache and revalidates /sms. The runtime role can update only the editable plan columns.
 - Admins move accounts between plans by hand in the same dialog (search by name or account number), through `GET /free/v1/admin/accounts?q=` and `PUT /free/v1/admin/accounts/{id}/plan`. There is no billing yet, so this is how paid plans are granted.
+
+### Pro for self-hosters and teams
+
+Pro (plan id `plus`, shown as Pro, 5,000 messages) and Enterprise (everything in Pro, capacity set per account by admins, plus support) unlock:
+
+- Connect a self-hosted archive (`src/cloud.rs`, hosted `src/sync.rs`). The local service links with a papamo.dev computer token (`PUT /v1/cloud`), then pushes messages not yet synced (`POST /free/v1/sync/push`, original times kept) and pulls new ones with a microsecond cursor (`GET /free/v1/sync/pull`). Phones can therefore send to papamo.dev with no tunnel; pulled messages fire local webhooks through the usual triggers. Contact cards sync both ways by timestamp; computer tokens write the edited copy. `POST /v1/cloud/restore` resets the cursor to pull everything onto a new computer. Stars and read status do not sync yet. External SQL storage is not supported.
+- Team inboxes (hosted `src/teams.rs`): owners add members by account number; members send `x-psms-inbox: <owner id>` (the site proxy adds it from the inbox picked in Settings) and unlock with the owner's recovery words. Saved keys are kept per inbox in the browser.
+- Managed webhooks (hosted `src/webhooks.rs`): up to 10 HTTPS destinations; a database trigger queues `message.created` deliveries for plans with webhooks; every region's worker claims due deliveries with `SKIP LOCKED`, pins DNS to a public address (private, loopback, link-local, CGNAT and metadata addresses are refused), sends `{delivery_id, event, message_id}` with the destination's secret as a bearer token, and retries with backoff for 10 attempts. `GET /webhooks/deliveries` is the log; `POST …/{id}/replay` retries.
+- Reply from anywhere already works for any account: queued texts wait on papamo.dev until the Mac is back, and pSMS opens at login.
 
 ### macOS installer
 

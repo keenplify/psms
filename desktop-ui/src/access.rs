@@ -40,7 +40,7 @@ impl Dashboard {
             .gap_3()
             .min_w_0()
             .mb_5()
-            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.relay_view(cx)).child(self.heading("Access tokens"));
+            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.relay_view(cx)).child(self.cloud_view(cx)).child(self.heading("Access tokens"));
         let mut choices = div().h_flex().gap_2().child(self.caption("Expiration"));
         for (index, (label, days)) in [("7 days", Some(7)), ("30 days", Some(30)), ("Never", None)]
             .into_iter()
@@ -416,6 +416,125 @@ impl Dashboard {
                 .spawn(async move { relay::Relay::check(&url, &token, &key) })
                 .await;
             let _ = this.update_in(cx, |s, window, cx| s.relay_finish(result, window, cx));
+        })
+        .detach();
+    }
+}
+
+impl Dashboard {
+    /// papamo.dev Pro for this self-hosted archive: phones without a tunnel, an off-site backup,
+    /// the web inbox, teams and managed webhooks. Status is read here; changes go through the API.
+    fn cloud_view(&self, cx: &mut Context<Self>) -> Div {
+        let mut view = div()
+            .v_flex()
+            .gap_2()
+            .min_w_0()
+            .child(self.heading("papamo.dev Pro"));
+        if self.external {
+            return view.child(
+                self.caption("Connecting to papamo.dev works with the built-in SQLite archive."),
+            );
+        }
+        let link = self
+            .db
+            .query_row(
+                "SELECT last_sync, error, pushed, pulled FROM cloud_link WHERE id=1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<i64>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .ok();
+        let Some((synced, error, pushed, pulled)) = link else {
+            return view
+                .child(self.caption(
+                    "With a Pro plan, connect this archive to papamo.dev: your phone sends there with no tunnel, this archive keeps a sealed off-site backup, and you can read, reply and share it from any browser. Everything stays sealed with your archive key.",
+                ))
+                .child(
+                    div().h_flex().child(
+                        Button::new("cloud-connect")
+                            .primary()
+                            .label(if self.relay_busy { "Waiting for sign-in…" } else { "Connect to papamo.dev" })
+                            .disabled(self.relay_busy)
+                            .on_click(cx.listener(|s, _, w, cx| s.cloud_connect(w, cx))),
+                    ),
+                );
+        };
+        view = view
+            .child(format!(
+                "Connected · {pushed} backed up · {pulled} received from papamo.dev"
+            ))
+            .child(self.caption(match synced {
+                Some(_) => {
+                    "Syncing every few seconds. Phones can send to papamo.dev without a tunnel."
+                }
+                None => "Starting…",
+            }));
+        if let Some(error) = error {
+            view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
+        }
+        view.child(
+            div()
+                .h_flex()
+                .gap_2()
+                .child(Button::new("cloud-restore").label("Restore from papamo.dev").on_click(cx.listener(|s, _, _, cx| {
+                    s.notice = match s.api().map(|a| a.restore_cloud()) {
+                        Some(Ok(())) => "Restoring: messages from papamo.dev are coming down now.".into(),
+                        _ => "Start the archive service, then try again.".into(),
+                    };
+                    cx.notify()
+                })))
+                .child(Button::new("cloud-disconnect").icon(IconName::Ban).label("Disconnect").on_click(cx.listener(|s, _, _, cx| {
+                    s.notice = match s.api().map(|a| a.disconnect_cloud()) {
+                        Some(Ok(())) => "Disconnected. Your papamo.dev copy stays until you delete it there.".into(),
+                        _ => "Start the archive service, then try again.".into(),
+                    };
+                    cx.notify()
+                }))),
+        )
+    }
+    fn cloud_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(api) = self.api() else {
+            self.notice = "Start the archive service, then try again.".into();
+            cx.notify();
+            return;
+        };
+        let (attempt, url) = match hosted_login::Attempt::start() {
+            Ok(v) => v,
+            Err(e) => {
+                self.notice = e.into();
+                cx.notify();
+                return;
+            }
+        };
+        self.relay_busy = true;
+        cx.open_url(&url);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let account = attempt.wait().map_err(String::from)?;
+                    let token = relay::computer_token(&account.token)?;
+                    api.connect_cloud(&token)
+                        .map_err(|_| "papamo.dev did not accept this archive. Connecting needs a Pro plan.".to_string())
+                })
+                .await;
+            let _ = this.update_in(cx, |s, window, cx| {
+                s.relay_busy = false;
+                cx.activate(true);
+                window.activate_window();
+                s.notice = match result {
+                    Ok(()) => "Connected. This archive now backs up to papamo.dev and receives what your phone sends there.".into(),
+                    Err(e) => e,
+                };
+                cx.notify()
+            });
         })
         .detach();
     }

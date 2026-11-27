@@ -16,6 +16,7 @@ macro_rules! env_name {
 mod app_tokens;
 mod cards;
 mod cli;
+mod cloud;
 mod cloudflare;
 mod contacts;
 mod daemon;
@@ -406,6 +407,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     db.execute_batch(cards::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
     db.execute_batch(device_api::SCHEMA)?;
+    db.execute_batch(cloud::SCHEMA)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;
     if remote.is_some() {
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_hook_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_hook_cursor VALUES(1,0); CREATE TABLE IF NOT EXISTS external_sync_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_sync_cursor VALUES(1,0);")?;
@@ -457,6 +459,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     webhooks::start(archive.clone())?;
     outbox::watch_devices(archive.clone(), prefix.clone());
+    cloud::start(archive.clone());
     let sync_routes = sync::configure(&archive, &db_path)?;
     let monitor = archive.clone();
     let app = Router::new()
@@ -487,6 +490,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .merge(inbox::routes(&prefix, archive.clone()))
         .merge(cards::routes(&prefix, archive.clone()))
         .merge(outbox::routes(&prefix, archive.clone()))
+        .merge(cloud::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .merge(sync_routes)

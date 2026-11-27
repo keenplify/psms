@@ -391,6 +391,12 @@ impl Inbox {
             .await?
             .to_string())
     }
+    #[tool(
+        description = "Show whether this self-hosted archive is connected to papamo.dev Pro, when it last synced, and how many messages it backed up and received."
+    )]
+    async fn cloud_status(&self) -> Result<String, String> {
+        Ok(self.get("/cloud", &[]).await?.to_string())
+    }
     #[tool(description = "Check whether a queued message was sent, is still waiting, or failed.")]
     async fn outbox_status(&self, Parameters(q): Parameters<MessageId>) -> Result<String, String> {
         let id = Uuid::parse_str(&q.id).map_err(|_| "Invalid outbox ID")?;

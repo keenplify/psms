@@ -5385,7 +5385,7 @@ dependencies = [
 
 [[package]]
 name = "psms-desktop"
-version = "0.1.19"
+version = "0.1.20"
 dependencies = [
  "aes-gcm",
  "axum",

@@ -77,20 +77,50 @@ ALTER TABLE plans ADD COLUMN IF NOT EXISTS sort integer NOT NULL DEFAULT 0;
 UPDATE plans SET sort=0, max_phones=3, perks=ARRAY['Your latest 100 encrypted messages; the oldest unstarred ones make room for new texts','Up to 3 phones','Reply from anywhere with pSMS for Mac','Contact cards, read status and stars','Browser autofill for one-time codes','100 API calls every 30 minutes'] WHERE id='free' AND perks='{}';
 UPDATE plans SET sort=1, monthly_price_cents=300, price_label='Coming soon', perks=ARRAY['Unlimited messages, kept until you delete them','Unlimited phones and Macs','Unlimited API calls','Webhooks when a text arrives','Everything in Free'] WHERE id='plus' AND perks='{}';
 UPDATE plans SET sort=2, price_label='Contact us', perks=ARRAY['Everything in Plus','Team inboxes for shared numbers','Custom retention and data residency','Priority support'] WHERE id='enterprise' AND perks='{}';
+-- Pro features for self-hosted archives and teams.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS self_host_sync boolean NOT NULL DEFAULT false;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS teams boolean NOT NULL DEFAULT false;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS pro_features_seeded boolean NOT NULL DEFAULT false;
+UPDATE plans SET self_host_sync=true, teams=true, pro_features_seeded=true WHERE id IN ('plus','enterprise') AND NOT pro_features_seeded;
+UPDATE plans SET pro_features_seeded=true WHERE NOT pro_features_seeded;
 GRANT UPDATE (name, message_limit, api_calls_per_30_min, monthly_price_cents, available, webhooks,
-  price_label, perks, max_phones, replies, autofill) ON plans TO psms_runtime;
+  price_label, perks, max_phones, replies, autofill, self_host_sync, teams) ON plans TO psms_runtime;
 -- Admins move accounts between plans by hand from the inbox.
-GRANT UPDATE (plan) ON accounts TO psms_runtime;
+-- Enterprise capacity is set per account; it overrides the plan's message limit.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS message_limit_override bigint CHECK (message_limit_override > 0);
+GRANT UPDATE (plan, message_limit_override) ON accounts TO psms_runtime;
+-- Plus keeps the latest 5,000 messages (set once; admins can change it after).
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS capacity_seeded boolean NOT NULL DEFAULT false;
+UPDATE plans SET message_limit=5000,
+  perks=array_replace(perks,'Unlimited messages, kept until you delete them','Your latest 5,000 messages; the oldest unstarred ones make room for new texts')
+  WHERE id='plus' AND NOT capacity_seeded;
+UPDATE plans SET perks=array_replace(perks,'Everything in Plus','Everything in Plus, with the message capacity you need')
+  WHERE id='enterprise' AND NOT capacity_seeded;
+UPDATE plans SET capacity_seeded=true WHERE NOT capacity_seeded;
+-- Pro perks for self-hosted archives, teams and managed webhooks (set once; admins edit after).
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS pro_perks_seeded boolean NOT NULL DEFAULT false;
+UPDATE plans SET name='Pro', perks=ARRAY[
+  'Your latest 5,000 messages; the oldest unstarred ones make room for new texts',
+  'Connect a self-hosted archive: phones need no tunnel, with a sealed off-site backup and restore',
+  'Read and reply from any browser, even while your Mac is off; replies send when it is back',
+  'Team inboxes for shared numbers',
+  'Managed webhooks with retries, a delivery log and replay',
+  'Unlimited phones, Macs and API calls',
+  'Everything in Free'] WHERE id='plus' AND NOT pro_perks_seeded;
+UPDATE plans SET perks=ARRAY['Everything in Pro','Message capacity sized to your team','Priority support'] WHERE id='enterprise' AND NOT pro_perks_seeded;
+UPDATE plans SET pro_perks_seeded=true WHERE NOT pro_perks_seeded;
 -- Effective limits for each account. Admins are unlimited whatever their plan.
 CREATE OR REPLACE VIEW archive_quota AS
- SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE p.message_limit END AS message_limit,
+ SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE coalesce(a.message_limit_override, p.message_limit) END AS message_limit,
    p.id AS plan, p.name AS plan_name,
    CASE WHEN admin.yes THEN NULL::integer ELSE p.api_calls_per_30_min END AS api_calls_per_30_min,
    admin.yes OR p.webhooks AS webhooks,
    CASE WHEN admin.yes THEN NULL::integer ELSE p.max_phones END AS max_phones,
    admin.yes OR p.replies AS replies,
    admin.yes OR p.autofill AS autofill,
-   admin.yes AS admin
+   admin.yes AS admin,
+   admin.yes OR p.self_host_sync AS self_host_sync,
+   admin.yes OR p.teams AS teams
  FROM accounts a JOIN plans p ON p.id=a.plan
  CROSS JOIN LATERAL (SELECT EXISTS (
    SELECT 1 FROM admin_role_snapshot s
@@ -121,4 +151,42 @@ CREATE TABLE IF NOT EXISTS api_usage (
  window_start timestamptz NOT NULL, calls integer NOT NULL
 );
 GRANT SELECT,INSERT,UPDATE,DELETE ON api_usage TO psms_runtime;
+-- Team inboxes: members open the owner's inbox (they need its recovery words to read it).
+CREATE TABLE IF NOT EXISTS account_members (
+ owner_id bigint NOT NULL REFERENCES accounts ON DELETE CASCADE,
+ member_id bigint NOT NULL REFERENCES accounts ON DELETE CASCADE,
+ added_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (owner_id, member_id), CHECK (owner_id <> member_id)
+);
+CREATE INDEX IF NOT EXISTS account_members_by_member ON account_members(member_id);
+GRANT SELECT,INSERT,DELETE ON account_members TO psms_runtime;
+-- Managed webhooks: Papamo delivers message events with retries and keeps a delivery log.
+CREATE TABLE IF NOT EXISTS hosted_webhooks (
+ id text PRIMARY KEY, account_id bigint NOT NULL REFERENCES accounts ON DELETE CASCADE,
+ url text NOT NULL, secret text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE (account_id, url)
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON hosted_webhooks TO psms_runtime;
+CREATE TABLE IF NOT EXISTS hosted_webhook_deliveries (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ webhook_id text NOT NULL REFERENCES hosted_webhooks ON DELETE CASCADE,
+ account_id bigint NOT NULL, message_id text NOT NULL, event text NOT NULL,
+ status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','delivered','failed')),
+ attempts integer NOT NULL DEFAULT 0, due timestamptz NOT NULL DEFAULT now(),
+ last_status integer, last_error text, created_at timestamptz NOT NULL DEFAULT now(), delivered_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS hosted_webhook_due ON hosted_webhook_deliveries(due) WHERE status='pending';
+CREATE INDEX IF NOT EXISTS hosted_webhook_log ON hosted_webhook_deliveries(account_id, id DESC);
+GRANT SELECT,INSERT,UPDATE,DELETE ON hosted_webhook_deliveries TO psms_runtime;
+CREATE OR REPLACE FUNCTION queue_hosted_webhooks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO hosted_webhook_deliveries(webhook_id, account_id, message_id, event)
+  SELECT w.id, w.account_id, NEW.id, 'message.created' FROM hosted_webhooks w
+  JOIN archive_quota q ON q.id = w.account_id
+  WHERE w.account_id = NEW.account_id AND q.webhooks;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS archived_messages_webhooks ON archived_messages;
+CREATE TRIGGER archived_messages_webhooks AFTER INSERT ON archived_messages
+ FOR EACH ROW EXECUTE FUNCTION queue_hosted_webhooks();
 COMMIT;

@@ -46,11 +46,32 @@ pub enum Action {
         #[command(subcommand)]
         command: Devices,
     },
+    /// Connect this archive to papamo.dev Pro: phones without a tunnel, backup, web inbox and teams.
+    Cloud {
+        #[command(subcommand)]
+        command: Cloud,
+    },
     /// Queue a text for your sending device (pSMS for Mac today) and check on it.
     Outbox {
         #[command(subcommand)]
         command: Outbox,
     },
+}
+#[derive(Subcommand)]
+pub enum Cloud {
+    /// Connect with a papamo.dev computer token (Settings → Reply from anywhere in pSMS for Mac
+    /// creates one, or POST /free/v1/computers).
+    Connect {
+        #[arg(long)]
+        token_file: PathBuf,
+        /// Another Papamo region or a test server.
+        #[arg(long)]
+        server: Option<String>,
+    },
+    Status,
+    Disconnect,
+    /// Pull the whole papamo.dev copy down again, for example on a new computer.
+    Restore,
 }
 #[derive(Subcommand)]
 pub enum Devices {
@@ -509,6 +530,29 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
             }
         },
         Action::Contact { command } => contact_command(path, opts, command).await?,
+        Action::Cloud { command } => {
+            let reply = match command {
+                Cloud::Connect { token_file, server } => {
+                    let token = std::fs::read_to_string(token_file)?.trim().to_string();
+                    let mut body = json!({"token": token});
+                    if let Some(s) = server {
+                        body["base"] = json!(s);
+                    }
+                    call(path, opts, reqwest::Method::PUT, "/cloud", Some(body)).await?;
+                    call(path, opts, reqwest::Method::GET, "/cloud", None).await?
+                }
+                Cloud::Status => call(path, opts, reqwest::Method::GET, "/cloud", None).await?,
+                Cloud::Disconnect => {
+                    call(path, opts, reqwest::Method::DELETE, "/cloud", None).await?;
+                    json!({"connected": false})
+                }
+                Cloud::Restore => {
+                    call(path, opts, reqwest::Method::POST, "/cloud/restore", None).await?;
+                    json!({"restoring": true})
+                }
+            };
+            println!("{reply}");
+        }
         Action::Devices { command } => {
             let db = Connection::open(storage::local_state(path))?;
             match command {
