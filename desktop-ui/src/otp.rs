@@ -126,9 +126,25 @@ fn is_fresh() -> bool {
         .unwrap_or(false)
 }
 
-/// A plain notification for a new text: the sender, then the message.
-pub fn alert(id: &str, title: &str, body: &str) {
-    platform::alert(id, title, body);
+/// A plain notification for a new text: the sender, then the message, with the contact's
+/// photo when they have one.
+pub fn alert(id: &str, title: &str, body: &str, photo: Option<&(String, String)>) {
+    use base64::Engine as _;
+    let image = photo.and_then(|(kind, data)| {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .ok()?;
+        let ext = if kind == "image/png" { "png" } else { "jpg" };
+        let digest: String = id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(24)
+            .collect();
+        let path = std::env::temp_dir().join(format!("psms-avatar-{digest}.{ext}"));
+        std::fs::write(&path, bytes).ok()?;
+        Some(path)
+    });
+    platform::alert(id, title, body, image.as_deref());
 }
 
 /// Whether new texts notify, on unless turned off in Settings.
@@ -343,7 +359,7 @@ mod platform {
             .addNotificationRequest_withCompletionHandler(&request, None);
     }
 
-    pub fn alert(id: &str, title: &str, body: &str) {
+    pub fn alert(id: &str, title: &str, body: &str, _photo: Option<&std::path::Path>) {
         if !native() {
             let _ = std::process::Command::new("/usr/bin/osascript")
                 .args([
@@ -471,10 +487,12 @@ mod platform {
         }
         copy(code);
     }
-    pub fn alert(_id: &str, title: &str, body: &str) {
+    pub fn alert(_id: &str, title: &str, body: &str, photo: Option<&std::path::Path>) {
         #[cfg(target_os = "windows")]
         {
-            let script = "param($t, $b) Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; $n.ShowBalloonTip(10000, $t, $b, 'Info'); Start-Sleep 11; $n.Dispose()";
+            // A Windows toast, with the contact's photo as its circle image when there is one.
+            let script = "param($t, $b, $p) [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; $e = [System.Security.SecurityElement]; $img = ''; if ($p) { $img = '<image placement=\"appLogoOverride\" hint-crop=\"circle\" src=\"' + $e::Escape($p) + '\"/>' }; $x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml('<toast><visual><binding template=\"ToastGeneric\">' + $img + '<text>' + $e::Escape($t) + '</text><text>' + $e::Escape($b) + '</text></binding></visual></toast>'); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('pSMS').Show([Windows.UI.Notifications.ToastNotification]::new($x))";
+            let photo = photo.map(|p| p.display().to_string()).unwrap_or_default();
             let _ = std::process::Command::new("powershell")
                 .args([
                     "-NoProfile",
@@ -484,14 +502,18 @@ mod platform {
                     script,
                     title,
                     body,
+                    &photo,
                 ])
                 .spawn();
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = std::process::Command::new("notify-send")
-                .args(["--app-name=pSMS", title, body])
-                .spawn();
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.arg("--app-name=pSMS");
+            if let Some(p) = photo {
+                cmd.arg("--icon").arg(p);
+            }
+            let _ = cmd.args([title, body]).spawn();
         }
     }
     pub fn request_typing_permission() {}

@@ -662,7 +662,8 @@ impl Dashboard {
     /// Notifies once for each text that arrives while pSMS is open. The first look at an
     /// inbox only records what is already there.
     fn announce_new(&mut self) {
-        if self.page != 0 || self.starred {
+        // Wait for a loaded inbox, so the first page isn't mistaken for new texts.
+        if self.page != 0 || self.starred || self.threads.is_empty() {
             return;
         }
         let source = (self.hosted.is_some(), self.session_key.is_some());
@@ -671,32 +672,53 @@ impl Dashboard {
             self.alert_seen.clear();
             self.alert_source = Some(source);
         }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        let _ = self.db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS desktop_alerted(id TEXT PRIMARY KEY, at INTEGER NOT NULL DEFAULT (unixepoch()));
+             DELETE FROM desktop_alerted WHERE at < unixepoch() - 86400;",
+        );
         let mut fresh = Vec::new();
         for thread in &self.threads {
             for mail in thread.items.iter().filter(|m| !m.outgoing) {
-                if self.alert_seen.insert(mail.id.clone()) && primed {
-                    let name = thread
-                        .contact
-                        .as_ref()
-                        .and_then(|c| self.cards.get(c))
-                        .map(|e| e.card.name.clone())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or_else(|| thread.title.clone());
-                    fresh.push((mail.id.clone(), name, mail.text.clone(), mail.locked));
+                // Only texts from the last few minutes, each once, even across restarts.
+                if !self.alert_seen.insert(mail.id.clone()) || !primed || now - mail.at > 300 {
+                    continue;
                 }
+                let first = self
+                    .db
+                    .execute(
+                        "INSERT OR IGNORE INTO desktop_alerted(id) VALUES(?1)",
+                        [&mail.id],
+                    )
+                    .is_ok_and(|n| n == 1);
+                if !first {
+                    continue;
+                }
+                let entry = thread.contact.as_ref().and_then(|c| self.cards.get(c));
+                let name = entry
+                    .map(|e| e.card.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| thread.title.clone());
+                let photo = entry.and_then(|e| e.card.photo.clone());
+                fresh.push((mail.id.clone(), name, mail.text.clone(), mail.locked, photo));
             }
         }
         let alerts = otp::alerts_enabled(&self.db);
         let codes = otp::enabled(&self.db);
-        for (id, name, text, locked) in fresh.into_iter().take(5) {
+        for (id, name, text, locked, photo) in fresh.into_iter().take(5) {
             if let Some(code) = otp::code(&text).filter(|_| codes && !locked) {
-                // Codes get their own notification with Copy and Type.
+                // Codes get their own notification with Copy and Type, on every system.
                 otp::announce(&id, &name, &code);
-            } else if alerts && locked {
-                otp::alert(&id, "New text", "Unlock pSMS to read it.");
-            } else if alerts {
+            } else if !alerts || cfg!(target_os = "macos") {
+                // On a Mac, Messages already notifies for every text.
+            } else if locked {
+                otp::alert(&id, "New text", "Unlock pSMS to read it.", None);
+            } else {
                 let body: String = text.chars().take(180).collect();
-                otp::alert(&id, &name, &body);
+                otp::alert(&id, &name, &body, photo.as_ref());
             }
         }
     }
@@ -2698,6 +2720,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "capture-missed",
                                                     "Your iPhone stopped sending texts to pSMS",
                                                     "A text reached this Mac but not pSMS. On your iPhone, open Shortcuts → Automation and turn pSMS Capture back on, set to Run Immediately.",
+                                                    None,
                                                 );
                                             }
                                             Ok::<_, String>(stored)
@@ -2737,7 +2760,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let mut records=Vec::new();
                                             for r in v["messages"].as_array()? {
                                                 let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get::<_,String>(0)).ok()?;
-                                                records.push(archive::Record{id:r["id"].as_str()?.into(),provider:r["sender"].as_str()?.into(),body:r["body"].as_str()?.into(),time:time.clone(),starred:r["starred"].as_i64()==Some(1),read:true,when:time,..Default::default()});
+                                                records.push(archive::Record{id:r["id"].as_str()?.into(),provider:r["sender"].as_str()?.into(),body:r["body"].as_str()?.into(),time:time.clone(),starred:r["starred"].as_i64()==Some(1),read:true,when:time,at:r["archived_at"].as_i64().unwrap_or_default(),..Default::default()});
                                             }
                                             Some((records,v["newest"].as_i64()?))
                                         }) {s.external_page=Some((page,starred,v.0));s.external_newest=v.1;} else {s.external_page=None;s.notice="Could not reach the selected database.".into();}

@@ -28,6 +28,8 @@ pub struct Mail {
     pub reply_to: Option<String>,
     /// Edited after it was sent; the text is the latest version.
     pub edited: bool,
+    /// When it arrived, in Unix seconds.
+    pub at: i64,
 }
 pub struct Thread {
     pub key: String,
@@ -54,6 +56,8 @@ pub struct Record {
     pub chat: Option<String>,
     pub reactions: Vec<String>,
     pub files: i64,
+    /// When it arrived, in Unix seconds.
+    pub at: i64,
 }
 impl Record {
     /// A record from an inbox API listing (local service or papamo.dev).
@@ -75,6 +79,10 @@ impl Record {
                 .filter_map(|x| x["envelope"].as_str().map(String::from))
                 .collect(),
             files: r["attachments"].as_i64().unwrap_or(0),
+            at: r["received_at"]
+                .as_i64()
+                .or(r["archived_at"].as_i64())
+                .unwrap_or_default(),
         })
     }
 }
@@ -114,7 +122,8 @@ pub fn read(
              ELSE strftime('%m/%d/%y',m.archived_at,'unixepoch','localtime') END,
         (SELECT chat_id FROM message_chats c WHERE c.message_id=m.id),
         (SELECT group_concat(envelope, ' ') FROM message_reactions x WHERE x.message_id=m.id),
-        (SELECT count(*) FROM message_attachments a WHERE a.message_id=m.id)
+        (SELECT count(*) FROM message_attachments a WHERE a.message_id=m.id),
+        m.archived_at
         FROM messages m LEFT JOIN message_flags f ON m.id=f.message_id WHERE ?1=0 OR f.starred=1 ORDER BY m.rowid DESC LIMIT ?2 OFFSET ?3")?;
     let mut rows = stmt.query((starred, (LIMIT + 1) as i64, page * LIMIT as i64))?;
     let mut records = Vec::new();
@@ -135,6 +144,7 @@ pub fn read(
                 .map(|s| s.split(' ').map(String::from).collect())
                 .unwrap_or_default(),
             files: row.get(10).unwrap_or_default(),
+            at: row.get(11).unwrap_or_default(),
         });
     }
     Ok(group(records, key, &chats(db, key)))
@@ -299,6 +309,7 @@ pub fn group(
             reactions,
             reply_to: extra["reply_to"].as_str().map(String::from),
             edited: change.is_some() && !unsent,
+            at: r.at,
         });
     }
     (threads, older)
