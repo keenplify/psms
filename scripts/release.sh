@@ -10,7 +10,7 @@ cd "$root"
 target=aarch64-apple-darwin
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || { echo "Run this on an Apple Silicon Mac." >&2; exit 1; }
 for tool in gh cargo python3 hdiutil; do command -v "$tool" >/dev/null || { echo "Install $tool first." >&2; exit 1; }; done
-version="$(python3 -c 'import tomllib;print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 tag="v$version"
 [[ "$(git branch --show-current)" == main ]] || { echo "Release from main." >&2; exit 1; }
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit or stash local changes first." >&2; exit 1; }
