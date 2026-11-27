@@ -1,6 +1,7 @@
 mod browser;
 mod outbox;
 mod plans;
+mod polar;
 mod sync;
 mod teams;
 mod webhooks;
@@ -1000,6 +1001,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/otp/recent", get(browser::recent))
         .route("/otp/events", get(browser::events))
         .route("/plans", get(plans::list))
+        .route("/billing/plus", post(polar::checkout))
+        .route("/billing/polar/webhook", post(polar::webhook))
         .route("/admin/plans", get(plans::admin_list))
         .route("/admin/plans/{id}", put(plans::admin_save))
         .route("/admin/accounts", get(plans::admin_accounts))

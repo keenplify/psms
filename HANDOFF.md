@@ -1,5 +1,7 @@
 # pSMS handoff
 
+Hosted Plus billing is linked from the Papamo web inbox account menu. Personal archive owners open Polar checkout or the customer portal through the hosted API. The desktop, CLI, and MCP self-hosted archives remain free and have no local billing command. To activate hosted billing, configure PSMS_POLAR_TOKEN, PSMS_POLAR_PRODUCT and PSMS_POLAR_WEBHOOK_SECRET on the hosted service, apply hosted/schema.sql, deploy the web and hosted changes, and enable the customer.state_changed webhook before opening Plus sign-ups in the plan editor. The webhook uses the standard whsec_ signing format.
+
 ## Start and verify
 
 1. Put the matching `psms` and `psms-desktop` executables in one directory. Run `psms init`. On Windows, find **pSMS** in the notification area, including its overflow menu.

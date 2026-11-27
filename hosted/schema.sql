@@ -113,6 +113,14 @@ UPDATE plans SET pro_perks_seeded=true WHERE NOT pro_perks_seeded;
 UPDATE plans SET name='Plus' WHERE id='plus' AND name='Pro';
 UPDATE plans SET perks=array_replace(perks,'Everything in Pro','Everything in Plus');
 -- Effective limits for each account. Admins are unlimited whatever their plan.
+CREATE TABLE IF NOT EXISTS polar_plus (
+ account_id bigint PRIMARY KEY REFERENCES accounts ON DELETE CASCADE,
+ valid_until timestamptz,
+ checkout_url text,
+ checkout_expires timestamptz,
+ checkout_price bigint
+);
+GRANT SELECT, INSERT, UPDATE ON polar_plus TO psms_runtime;
 CREATE OR REPLACE VIEW archive_quota AS
  SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE coalesce(a.message_limit_override, p.message_limit) END AS message_limit,
    p.id AS plan, p.name AS plan_name,
@@ -124,7 +132,8 @@ CREATE OR REPLACE VIEW archive_quota AS
    admin.yes AS admin,
    admin.yes OR p.self_host_sync AS self_host_sync,
    admin.yes OR p.teams AS teams
- FROM accounts a JOIN plans p ON p.id=a.plan
+ FROM accounts a LEFT JOIN polar_plus billing ON billing.account_id=a.id
+ JOIN plans p ON p.id=CASE WHEN a.plan='free' AND billing.valid_until>now() THEN 'plus' ELSE a.plan END
  CROSS JOIN LATERAL (SELECT EXISTS (
    SELECT 1 FROM admin_role_snapshot s
    WHERE s.expires_at > statement_timestamp() AND s.subjects ? a.sg_subject

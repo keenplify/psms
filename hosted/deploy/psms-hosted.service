@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 User=psms_hosted
+EnvironmentFile=-/etc/psms/hosted-db/polar-webhook.env
 ExecStart=/usr/local/bin/psms-hosted
 Restart=on-failure
 RestartSec=4
