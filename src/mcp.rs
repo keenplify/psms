@@ -106,9 +106,13 @@ struct ContactRef {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Outgoing {
-    /// The phone number or address to text.
+    /// The phone number or address to text, or a group's send_to from list_chats.
     to: String,
     body: String,
+    /// Send later, at this Unix time. Leave out to send now.
+    send_at: Option<i64>,
+    /// Send later, this many minutes from now. Ignored when send_at is set.
+    delay_minutes: Option<u32>,
 }
 
 #[tool_handler(router=self.tool_router)]
@@ -398,7 +402,7 @@ impl Inbox {
         Ok(json!({"id": id, "reset": true}).to_string())
     }
     #[tool(
-        description = "Queue a text message to a phone number, email, or a group chat's send_to from list_chats. pSMS for Mac sends it through Messages and keeps the sent copy in the archive. Returns an outbox ID; check it with outbox_status. Only send what the user asked you to send."
+        description = "Queue a text message to a phone number, email, or a group chat's send_to from list_chats. pSMS for Mac sends it through Messages, at send_at or after delay_minutes when given, and keeps the sent copy in the archive. Returns an outbox ID; check it with outbox_status. Only send what the user asked you to send."
     )]
     async fn send_message(&self, Parameters(q): Parameters<Outgoing>) -> Result<String, String> {
         Ok(self
@@ -406,7 +410,9 @@ impl Inbox {
                 reqwest::Method::POST,
                 "/outbox",
                 &[],
-                Some(json!({"to": q.to, "body": q.body})),
+                Some(json!({"to": q.to, "body": q.body, "send_at": q.send_at.or_else(|| {
+                    q.delay_minutes.and_then(|m| crate::manage::send_time(&format!("+{m}m")).ok())
+                })})),
             )
             .await?
             .to_string())

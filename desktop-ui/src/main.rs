@@ -162,6 +162,8 @@ struct Dashboard {
     sending: bool,
     /// Writing a new conversation, and who it goes to.
     composing: bool,
+    /// The send-later choices are showing.
+    later_open: bool,
     new_to: Entity<InputState>,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
@@ -1075,6 +1077,61 @@ impl Dashboard {
         }
         cx.notify();
     }
+    /// Queues the typed reply to send later, like BlueBubbles' scheduled messages. pSMS for Mac
+    /// sends it from the outbox when it is due, even if this window is closed.
+    fn schedule_reply(&mut self, at: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.reply.read(cx).value().trim().to_string();
+        let to = if self.composing {
+            Some(self.new_to.read(cx).value().trim().to_string())
+        } else {
+            self.reply_target()
+        };
+        let Some(to) = to.filter(|t| !t.is_empty()) else {
+            return;
+        };
+        if text.is_empty() {
+            self.notice = "Type a message to schedule.".into();
+            return;
+        }
+        let queued = match (self.files_source(), &self.hosted) {
+            (Some((mac_messages::Inbox::Hosted(_), key)), Some(h)) => {
+                mac_messages::seal_json(&key, &serde_json::json!({"to": to, "body": text}))
+                    .ok_or("Could not seal the text.".to_string())
+                    .and_then(|envelope| {
+                        h.call(
+                            reqwest::Method::POST,
+                            "/outbox",
+                            Some(serde_json::json!({"envelope": envelope, "send_at": at})),
+                        )
+                    })
+            }
+            _ => match self.api() {
+                Some(api) => api
+                    .call(
+                        reqwest::Method::POST,
+                        "/outbox",
+                        Some(serde_json::json!({"to": to, "body": text, "send_at": at})),
+                    )
+                    .map_err(|_| "Could not schedule this text.".to_string()),
+                None => Err("Start the archive service to schedule texts.".to_string()),
+            },
+        };
+        self.later_open = false;
+        match queued {
+            Ok(_) => {
+                self.notice = format!(
+                    "Scheduled for {}.",
+                    archive::times(&self.db, at)
+                        .map(|(t, _)| t)
+                        .unwrap_or_default()
+                );
+                self.composing = false;
+                self.reply.update(cx, |i, cx| i.set_value("", window, cx));
+            }
+            Err(e) => self.notice = e,
+        }
+        cx.notify()
+    }
     /// The recipient of the open conversation: a group's Messages chat, or a person's number.
     fn reply_target(&self) -> Option<String> {
         self.threads
@@ -1977,6 +2034,16 @@ impl Dashboard {
                         )
                         .child(div().flex_1().child(Input::new(&self.reply)))
                         .child(
+                            Button::new("reply-later")
+                                .label("Later")
+                                .ghost()
+                                .disabled(self.sending)
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.later_open = !s.later_open;
+                                    cx.notify()
+                                })),
+                        )
+                        .child(
                             Button::new("reply-send")
                                 .primary()
                                 .label(if self.sending { "Sending…" } else { "Send" })
@@ -1991,6 +2058,35 @@ impl Dashboard {
                         .py_2()
                         .text_color(self.color(MUTED))
                         .child(hint)
+                })
+                .when(can_reply && self.later_open, |d| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or_default();
+                    // Local times for tonight and tomorrow morning, from the archive's clock.
+                    let local = |sql: &str| -> i64 {
+                        self.db
+                            .query_row(sql, [], |r| r.get(0))
+                            .unwrap_or(now + 3600)
+                    };
+                    let tonight = local("SELECT CASE WHEN strftime('%H','now','localtime') < '20' THEN unixepoch(date('now','localtime')||' 20:00','utc') ELSE unixepoch(date('now','localtime','+1 day')||' 20:00','utc') END");
+                    let morning = local("SELECT unixepoch(date('now','localtime','+1 day')||' 09:00','utc')");
+                    let choice = |id: &'static str, label: &'static str, at: i64| {
+                        Button::new(id).label(label).on_click(
+                            cx.listener(move |s, _, w, cx| s.schedule_reply(at, w, cx)),
+                        )
+                    };
+                    d.child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .mt_2()
+                            .child(self.caption("Send later:"))
+                            .child(choice("later-hour", "In 1 hour", now + 3600))
+                            .child(choice("later-tonight", "Tonight, 8 PM", tonight))
+                            .child(choice("later-morning", "Tomorrow, 9 AM", morning)),
+                    )
                 }),
         )
     }
@@ -2558,6 +2654,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             card_photo: None,
                             reply,
                             composing: false,
+                            later_open: false,
                             new_to,
                             sending: false,
                         };

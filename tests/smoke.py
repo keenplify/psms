@@ -208,6 +208,19 @@ class ArchiveTest(unittest.TestCase):
                 self.assertEqual(self.request("POST",result,owner,{"status":"sent"})[0],204)
                 self.assertEqual(self.request("POST",result,owner,{"status":"sent"})[0],409)
                 self.assertEqual(self.request("GET","/outbox/"+queued["id"],owner)[1]["status"],"sent")
+                # Scheduled texts wait in the queue until they are due.
+                import time as clock
+                later = self.request("POST","/outbox",owner,{"to":"+15550100","body":"Later","send_at":int(clock.time())+7200})[1]
+                self.assertEqual(self.request("GET","/outbox/"+later["id"],owner)[1]["send_at"],later["send_at"])
+                self.assertEqual(self.request("POST","/outbox/claim",owner)[1]["messages"],[])
+                self.assertEqual(self.request("POST","/outbox",owner,{"to":"+15550100","body":"Hi","send_at":int(clock.time())+400*86400})[0],422)
+                due = self.request("POST","/outbox",owner,{"to":"+15550100","body":"Due","send_at":int(clock.time())-5})[1]
+                self.assertIsNone(due["send_at"])
+                self.assertEqual([m["id"] for m in self.request("POST","/outbox/claim",owner)[1]["messages"]],[due["id"]])
+                self.assertEqual(self.request("POST","/outbox/"+due["id"]+"/result",owner,{"status":"sent"})[0],204)
+                with sqlite3.connect(self.db) as db:
+                    db.execute("DELETE FROM outbox WHERE id IN (?,?)",(later["id"],due["id"]))
+                db.close()
                 with sqlite3.connect(self.db) as db:
                     self.assertEqual(db.execute("SELECT body FROM outbox").fetchone(),(None,))
                 db.close()

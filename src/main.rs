@@ -445,6 +445,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     db.execute_batch(attachments::SCHEMA)?;
     db.execute_batch(chats::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
+    outbox::migrate(&db)?;
     db.execute_batch(device_api::SCHEMA)?;
     db.execute_batch(cloud::SCHEMA)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;

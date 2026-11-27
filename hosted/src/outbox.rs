@@ -15,6 +15,9 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub struct Queue {
     envelope: String,
+    /// Send at this Unix time instead of now, like BlueBubbles' scheduled messages.
+    #[serde(default)]
+    send_at: Option<i64>,
 }
 pub async fn queue(
     State(a): State<App>,
@@ -25,9 +28,17 @@ pub async fn queue(
     if !crate::plans::gates(&a, user).await?.replies {
         return Err(StatusCode::PAYMENT_REQUIRED);
     }
-    if q.envelope.len() > 16_000 || !encryption::accepts(encryption::ACTIONS, &q.envelope) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    if q.envelope.len() > 16_000
+        || !encryption::accepts(encryption::ACTIONS, &q.envelope)
+        || q.send_at.is_some_and(|t| t > now + 366 * 24 * 3600)
+    {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
+    let send_at = q.send_at.filter(|t| *t > now).map(|t| t as f64);
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let waiting: i64 = db
         .query_one(
@@ -42,8 +53,8 @@ pub async fn queue(
     }
     let id = Uuid::new_v4();
     db.execute(
-        "INSERT INTO outbox(id,account_id,envelope) VALUES($1,$2,$3)",
-        &[&id.to_string(), &user, &q.envelope],
+        "INSERT INTO outbox(id,account_id,envelope,send_at) VALUES($1,$2,$3,to_timestamp($4))",
+        &[&id.to_string(), &user, &q.envelope, &send_at],
     )
     .await
     .map_err(|_| DOWN)?;
@@ -52,7 +63,7 @@ pub async fn queue(
         .map_err(|_| DOWN)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(json!({"id": id, "status": "queued"})),
+        Json(json!({"id": id, "status": "queued", "send_at": q.send_at.filter(|t| *t > now)})),
     ))
 }
 pub async fn status(State(a): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Reply {
@@ -81,7 +92,7 @@ pub async fn list(State(a): State<App>, h: HeaderMap) -> Reply {
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let rows = db
         .query(
-            "SELECT id,status,error,envelope,floor(extract(epoch FROM created_at))::bigint FROM outbox
+            "SELECT id,status,error,envelope,floor(extract(epoch FROM created_at))::bigint,floor(extract(epoch FROM send_at))::bigint FROM outbox
              WHERE account_id=$1 AND (status IN ('queued','sending','failed') OR finished_at > now() - interval '1 day')
              ORDER BY created_at DESC LIMIT 50",
             &[&user],
@@ -100,6 +111,7 @@ pub async fn list(State(a): State<App>, h: HeaderMap) -> Reply {
     Ok(Json(json!({"messages": rows.iter().map(|r| json!({
         "id": r.get::<_, String>(0), "status": r.get::<_, String>(1), "error": r.get::<_, Option<String>>(2),
         "envelope": r.get::<_, Option<String>>(3), "created_at": r.get::<_, i64>(4),
+        "send_at": r.get::<_, Option<i64>>(5),
     })).collect::<Vec<_>>(), "computer_seen_at": seen})))
 }
 pub async fn claim(State(a): State<App>, h: HeaderMap) -> Reply {
@@ -124,7 +136,8 @@ pub async fn claim(State(a): State<App>, h: HeaderMap) -> Reply {
         .query(
             "UPDATE outbox SET status='sending', claimed_at=now()
              WHERE account_id=$1 AND id IN (SELECT id FROM outbox WHERE account_id=$1 AND status='queued'
-                 ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED)
+                 AND (send_at IS NULL OR send_at <= now())
+                 ORDER BY coalesce(send_at, created_at) LIMIT 10 FOR UPDATE SKIP LOCKED)
              RETURNING id, envelope",
             &[&user],
         )

@@ -450,7 +450,7 @@ pub fn seal_bytes(key: &str, bytes: &[u8]) -> Option<String> {
         .ok()?;
     Some(STANDARD.encode([nonce.as_slice(), &sealed].concat()))
 }
-fn seal_json(key: &str, value: &Value) -> Option<String> {
+pub fn seal_json(key: &str, value: &Value) -> Option<String> {
     seal_bytes(key, value.to_string().as_bytes())
 }
 /// Opens a sealed file.

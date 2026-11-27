@@ -18,6 +18,18 @@ pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS outbox(
     status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sending','sent','failed')),
     error TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     claimed_at INTEGER, finished_at INTEGER)";
+/// Scheduled texts: older archives gain the column in place.
+pub fn migrate(db: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let has: bool = db
+        .prepare("SELECT 1 FROM pragma_table_info('outbox') WHERE name='send_at'")?
+        .exists([])?;
+    if !has {
+        db.execute_batch("ALTER TABLE outbox ADD COLUMN send_at INTEGER")?;
+    }
+    Ok(())
+}
+/// How far ahead a text can be scheduled.
+const MAX_SCHEDULE: i64 = 366 * 24 * 3600;
 /// A claimed message goes back to the queue if its device never reports a result.
 const CLAIM_TIMEOUT: i64 = 300;
 
@@ -32,29 +44,42 @@ fn can_send(archive: &Archive, headers: &HeaderMap) -> bool {
 struct Queue {
     to: String,
     body: String,
+    /// Send at this Unix time instead of now, like BlueBubbles' scheduled messages.
+    #[serde(default)]
+    send_at: Option<i64>,
 }
 async fn queue(State(archive): State<Archive>, headers: HeaderMap, Json(q): Json<Queue>) -> Reply {
     if !can_send(&archive, &headers) {
         return Err(StatusCode::UNAUTHORIZED);
     }
     let to = q.to.trim().to_string();
-    if to.is_empty() || to.len() > 64 || q.body.trim().is_empty() || q.body.len() > 4000 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    if to.is_empty()
+        || to.len() > 64
+        || q.body.trim().is_empty()
+        || q.body.len() > 4000
+        || q.send_at.is_some_and(|t| t > now + MAX_SCHEDULE)
+    {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
+    let send_at = q.send_at.filter(|t| *t > now);
     let id = Uuid::new_v4().to_string();
     let saved = id.clone();
     archive
         .query(move |db| {
             db.execute(
-                "INSERT INTO outbox(id,recipient,body) VALUES(?1,?2,?3)",
-                params![saved, to, q.body],
+                "INSERT INTO outbox(id,recipient,body,send_at) VALUES(?1,?2,?3,?4)",
+                params![saved, to, q.body, send_at],
             )
         })
         .await?;
     archive.arrivals.send_replace(());
     Ok((
         StatusCode::ACCEPTED,
-        Json(json!({"id": id, "status": "queued"})),
+        Json(json!({"id": id, "status": "queued", "send_at": send_at})),
     ))
 }
 
@@ -65,11 +90,12 @@ async fn status(State(archive): State<Archive>, headers: HeaderMap, Path(id): Pa
     let found = archive
         .query(move |db| {
             db.query_row(
-                "SELECT status,error,created_at,finished_at FROM outbox WHERE id=?1",
+                "SELECT status,error,created_at,finished_at,send_at FROM outbox WHERE id=?1",
                 [id.to_string()],
                 |r| {
                     Ok(json!({"id": id, "status": r.get::<_, String>(0)?, "error": r.get::<_, Option<String>>(1)?,
-                        "created_at": r.get::<_, i64>(2)?, "finished_at": r.get::<_, Option<i64>>(3)?}))
+                        "created_at": r.get::<_, i64>(2)?, "finished_at": r.get::<_, Option<i64>>(3)?,
+                        "send_at": r.get::<_, Option<i64>>(4)?}))
                 },
             )
             .optional()
@@ -93,7 +119,8 @@ async fn claim(State(archive): State<Archive>, headers: HeaderMap) -> Reply {
             )?;
             let mut stmt = db.prepare(
                 "UPDATE outbox SET status='sending', claimed_at=unixepoch()
-                 WHERE id IN (SELECT id FROM outbox WHERE status='queued' ORDER BY created_at LIMIT 10)
+                 WHERE id IN (SELECT id FROM outbox WHERE status='queued' AND (send_at IS NULL OR send_at <= unixepoch())
+                              ORDER BY coalesce(send_at, created_at) LIMIT 10)
                  RETURNING id, recipient, body",
             )?;
             stmt.query_map([], |r| {

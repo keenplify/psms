@@ -88,9 +88,12 @@ pub enum Devices {
 pub enum Outbox {
     /// Queue a message. A sending device delivers it and keeps the sent copy in the archive.
     Send {
-        /// The phone number or address to text.
+        /// The phone number or address to text, or a group's send_to from `inbox chats`.
         to: String,
         body: String,
+        /// Send later: a Unix time, or from now like +30m, +2h or +1d.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// Show whether a queued message was sent.
     Status { id: Uuid },
@@ -409,6 +412,25 @@ pub async fn newest(path: &Path, opts: &ServerOptions) -> Result<Option<String>>
             .map(str::to_owned),
     )
 }
+/// A send time: Unix seconds, or `+30m`, `+2h`, `+1d` from now.
+pub fn send_time(at: &str) -> Result<i64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64;
+    if let Some(rel) = at.strip_prefix('+') {
+        let (n, unit) = rel.split_at(rel.len().saturating_sub(1));
+        let n: i64 = n.parse().map_err(|_| "Use a time like +30m, +2h or +1d.")?;
+        let secs = match unit {
+            "m" => 60,
+            "h" => 3600,
+            "d" => 86400,
+            _ => return Err("Use a time like +30m, +2h or +1d.".into()),
+        };
+        return Ok(now + n * secs);
+    }
+    at.parse::<i64>()
+        .map_err(|_| "Give --at as Unix seconds or like +30m, +2h or +1d.".into())
+}
 fn unlock(entry: &mut Value, key: Option<&str>) {
     if let Some(k) = key {
         decrypt::enrich(entry, k);
@@ -632,13 +654,14 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
         }
         Action::Outbox { command } => {
             let reply = match command {
-                Outbox::Send { to, body } => {
+                Outbox::Send { to, body, at } => {
+                    let send_at = at.as_deref().map(send_time).transpose()?;
                     call(
                         path,
                         opts,
                         reqwest::Method::POST,
                         "/outbox",
-                        Some(json!({"to": to, "body": body})),
+                        Some(json!({"to": to, "body": body, "send_at": send_at})),
                     )
                     .await?
                 }

@@ -226,3 +226,5 @@ CREATE TABLE IF NOT EXISTS message_reactions (
 );
 CREATE INDEX IF NOT EXISTS message_reactions_message ON message_reactions(account_id,message_id);
 GRANT SELECT,INSERT,UPDATE,DELETE ON message_reactions TO psms_runtime;
+-- Scheduled texts: pSMS for Mac claims a queued text only once it is due.
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS send_at timestamptz;
