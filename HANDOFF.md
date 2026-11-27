@@ -131,7 +131,7 @@ pSMS aims to be BlueBubbles with end-to-end encryption, self-hosting and an iPho
 | Contacts | Yes | Phone cards, Mac Contacts and edits |
 | Webhooks, REST API, push | Yes | Webhooks, `/messages`, SSE and papamo.dev events |
 | Search, statistics | Search yes; statistics gap | — |
-| Edits and unsends (receive) | Gap | BlueBubbles re-polls by date; pSMS reads new rows only. Needs a date-based pass that seals an edit record |
+| Edits and unsends (receive) | Yes | A date-based pass like BlueBubbles' seals one replaceable change event per message (stored with reactions); clients show the latest text with Edited, or This message was unsent |
 | Delivered/read receipts for sent texts | Gap | Same reason as edits |
 | Group renames, participant changes as events | Gap | Rows with `item_type` 1–3 are skipped today |
 | Send tapbacks, typing indicators, edit, unsend, mark read on the Mac, rename groups, add or remove people, effects, mentions, Focus status | Not planned for now | All need BlueBubbles' Private API, which needs SIP disabled. That weakens a core macOS protection, which conflicts with pSMS's privacy promise; revisit only as an explicit, warned opt-in |
