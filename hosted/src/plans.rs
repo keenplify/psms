@@ -194,3 +194,76 @@ pub async fn admin_save(
     a.plans.clear();
     Ok(Json(row(&r)))
 }
+
+#[derive(Deserialize)]
+pub struct Search {
+    q: Option<String>,
+}
+/// Accounts for the admin editor, newest first, matched by name or account ID.
+pub async fn admin_accounts(
+    State(a): State<App>,
+    h: HeaderMap,
+    axum::extract::Query(s): axum::extract::Query<Search>,
+) -> Result<Json<Value>, Failure> {
+    admin(&a, &h).await?;
+    let needle = s.q.unwrap_or_default().trim().to_lowercase();
+    if needle.len() > 80 {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let pattern = format!(
+        "%{}%",
+        needle
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .query(
+            "SELECT a.id, coalesce(a.display_name, a.username), a.plan,
+               (SELECT count(*) FROM archived_messages m WHERE m.account_id=a.id), q.admin
+             FROM accounts a JOIN archive_quota q USING(id)
+             WHERE $1 = '%%' OR lower(coalesce(a.display_name,'')) LIKE $1 OR lower(a.username) LIKE $1 OR a.id::text = $2
+             ORDER BY a.id DESC LIMIT 50",
+            &[&pattern, &needle],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(Json(json!({"accounts": rows.iter().map(|r| json!({
+        "id": r.get::<_, i64>(0), "name": r.get::<_, String>(1), "plan": r.get::<_, String>(2),
+        "messages": r.get::<_, i64>(3), "admin": r.get::<_, bool>(4),
+    })).collect::<Vec<_>>()})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Assign {
+    plan: String,
+}
+/// Moves an account to a plan by hand, such as after a payment or for a trial.
+pub async fn admin_assign(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path(id): Path<i64>,
+    Json(p): Json<Assign>,
+) -> Result<StatusCode, Failure> {
+    admin(&a, &h).await?;
+    let changed = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .execute(
+            "UPDATE accounts SET plan=$2 WHERE id=$1 AND EXISTS (SELECT 1 FROM plans WHERE id=$2)",
+            &[&id, &p.plan],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if changed == 0 {
+        Err(StatusCode::NOT_FOUND)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
+}

@@ -79,6 +79,8 @@ UPDATE plans SET sort=1, monthly_price_cents=300, price_label='Coming soon', per
 UPDATE plans SET sort=2, price_label='Contact us', perks=ARRAY['Everything in Plus','Team inboxes for shared numbers','Custom retention and data residency','Priority support'] WHERE id='enterprise' AND perks='{}';
 GRANT UPDATE (name, message_limit, api_calls_per_30_min, monthly_price_cents, available, webhooks,
   price_label, perks, max_phones, replies, autofill) ON plans TO psms_runtime;
+-- Admins move accounts between plans by hand from the inbox.
+GRANT UPDATE (plan) ON accounts TO psms_runtime;
 -- Effective limits for each account. Admins are unlimited whatever their plan.
 CREATE OR REPLACE VIEW archive_quota AS
  SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE p.message_limit END AS message_limit,

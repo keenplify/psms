@@ -113,6 +113,7 @@ Hosted accounts have a plan (`accounts.plan` → `plans`): Free, Plus and Enterp
 - `archive_quota` gives each account's effective limits and gates; admins (`admin_role_snapshot`) are unlimited. Gates: `max_phones` on `/pair`, `replies` on `/computers` and `/outbox`, `autofill` on `/auth/browser`, all answering 402. `webhooks` is reported for hosted webhooks when they are built.
 - API throttle (`throttle` in `hosted/src/main.rs`): counts requests made with computer tokens per account in 30-minute windows, with `x-ratelimit-*` headers and 429 plus `Retry-After`. The signed-in inbox, phone uploads and the Mac relay's claim and result calls are not counted.
 - `GET /free/v1/plans` is public and cached (five minutes in memory and `Cache-Control: public, max-age=300`); papamo.dev/sms renders it with five-minute revalidation. Admins edit plans in the inbox (Account → Edit plans), through `GET/PUT /free/v1/admin/plans[/{id}]`; saving clears the server cache and revalidates /sms. The runtime role can update only the editable plan columns.
+- Admins move accounts between plans by hand in the same dialog (search by name or account number), through `GET /free/v1/admin/accounts?q=` and `PUT /free/v1/admin/accounts/{id}/plan`. There is no billing yet, so this is how paid plans are granted.
 
 ### macOS installer
 

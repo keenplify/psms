@@ -638,6 +638,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/plans", get(plans::list))
         .route("/admin/plans", get(plans::admin_list))
         .route("/admin/plans/{id}", put(plans::admin_save))
+        .route("/admin/accounts", get(plans::admin_accounts))
+        .route("/admin/accounts/{id}/plan", put(plans::admin_assign))
         .route("/pair", post(pair))
         .route("/computers", post(computer))
         .route("/outbox", get(outbox::list).post(outbox::queue))
