@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 mod access;
+mod api;
 #[path = "../../src/app_tokens.rs"]
 #[allow(dead_code)]
 mod app_tokens;
@@ -256,15 +257,23 @@ impl Dashboard {
         else {
             return;
         };
-        for mail in thread.items.iter_mut().filter(|m| !m.read && !m.locked) {
-            if self
-                .db
-                .execute(
-                    "INSERT OR IGNORE INTO message_reads(message_id) VALUES(?1)",
-                    [&mail.id],
-                )
-                .is_ok()
-            {
+        let unread: Vec<String> = thread
+            .items
+            .iter()
+            .filter(|m| !m.read && !m.locked)
+            .map(|m| m.id.clone())
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        let Some(api) = self.api() else { return };
+        if api.mark_read(&unread).is_ok()
+            && let Some(thread) = self
+                .threads
+                .iter_mut()
+                .find(|t| Some(&t.key) == self.selected.as_ref())
+        {
+            for mail in thread.items.iter_mut().filter(|m| unread.contains(&m.id)) {
                 mail.read = true;
             }
         }
@@ -670,7 +679,14 @@ impl Dashboard {
                 },
             }
         });
-        match cards::save(&self.db, &key, &contact, card.as_ref()) {
+        let saved = match (cards::envelope(&key, card.as_ref()), self.api()) {
+            (Err(e), _) => Err(e),
+            (Ok(_), None) => Err("Start the archive service to save contacts."),
+            (Ok(envelope), Some(api)) => api
+                .save_card(&contact, envelope)
+                .map_err(|_| "Could not save this contact."),
+        };
+        match saved {
             Ok(()) => {
                 self.card_editing = false;
                 self.notice = if reset {
@@ -1204,10 +1220,42 @@ impl Dashboard {
                 } else {
                     m.text.clone()
                 };
-                let mut actions=div().h_flex().items_center().gap_2().child(self.caption(m.time.clone()))
-                    .child(Button::new(("star",i)).icon(if starred{IconName::StarOff}else{IconName::Star}).ghost().label(if starred{"Unstar"}else{"Star"}).on_click(cx.listener(move|s,_,_,cx|{
-                        if !(if s.external { setup::cli(&s.path).and_then(|mut cmd|cmd.args(["storage","desktop-star",&id,&(!starred).to_string()]).output()).is_ok_and(|out|out.status.success()) } else {s.db.execute("INSERT INTO message_flags(message_id,starred) VALUES(?1,?2) ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",(&id,!starred)).is_ok()}) {s.notice="Could not change this star.".into()}s.refresh();cx.notify()
-                    })));
+                let mut actions = div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.caption(m.time.clone()))
+                    .child(
+                        Button::new(("star", i))
+                            .icon(if starred {
+                                IconName::StarOff
+                            } else {
+                                IconName::Star
+                            })
+                            .ghost()
+                            .label(if starred { "Unstar" } else { "Star" })
+                            .on_click(cx.listener(move |s, _, _, cx| {
+                                if !(if s.external {
+                                    setup::cli(&s.path)
+                                        .and_then(|mut cmd| {
+                                            cmd.args([
+                                                "storage",
+                                                "desktop-star",
+                                                &id,
+                                                &(!starred).to_string(),
+                                            ])
+                                            .output()
+                                        })
+                                        .is_ok_and(|out| out.status.success())
+                                } else {
+                                    s.api().is_some_and(|api| api.star(&id, !starred).is_ok())
+                                }) {
+                                    s.notice = "Could not change this star.".into()
+                                }
+                                s.refresh();
+                                cx.notify()
+                            })),
+                    );
                 if m.pgp {
                     let text = m.text.clone();
                     actions = actions.child(
@@ -1339,7 +1387,7 @@ impl Dashboard {
                 .background_executor()
                 .spawn(async move {
                     replies::send(&to, &text)?;
-                    api.store(&key, &to, &text).map_err(String::from)
+                    replies::store(&api, &key, &to, &text).map_err(String::from)
                 })
                 .await;
             let _ = this.update_in(cx, |s, window, cx| {
@@ -1358,11 +1406,11 @@ impl Dashboard {
         .detach();
     }
     /// The local archive's API, which every change goes through.
-    fn api(&self) -> Option<replies::Api> {
+    fn api(&self) -> Option<api::Api> {
         if self.external {
             return None;
         }
-        replies::Api::local(&self.path, &self.path)
+        api::Api::local(&self.path, &self.path)
     }
 }
 impl Render for Dashboard {
@@ -1605,7 +1653,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     && let Ok(Some((api, key))) = this.update(cx, |s, _| s.api().map(|a| (a, s.session_key.clone())))
                                 {
                                     cx.background_executor()
-                                        .spawn(async move { api.deliver(key.as_deref()) })
+                                        .spawn(async move { replies::deliver(&api, key.as_deref()) })
                                         .await;
                                 }
                                 if this

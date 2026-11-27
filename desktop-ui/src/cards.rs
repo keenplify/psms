@@ -4,7 +4,7 @@
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui_kit::{Image, ImageFormat};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 
@@ -187,56 +187,34 @@ pub fn load(db: &Connection, key: &str) -> HashMap<String, Entry> {
     out
 }
 
-/// Saves edits as the manual copy, or clears them so the phone's copy shows again.
-pub fn save(
-    db: &Connection,
-    key: &str,
-    contact: &str,
-    card: Option<&Card>,
-) -> Result<(), &'static str> {
-    let envelope = match card {
-        Some(c) => {
-            let mut value = json!({
-                "version": 1, "fn": c.name, "org": c.org, "title": c.title,
-                "tel": labeled(&c.phones), "email": labeled(&c.emails), "note": c.note,
-            });
-            if let Some((kind, data)) = &c.photo {
-                value["photo"] = json!({"type": kind, "data": data});
-            }
-            Some(seal(key, &value).ok_or("Could not seal this contact.")?)
-        }
-        None => None,
-    };
-    let exists = db
-        .query_row(
-            "SELECT 1 FROM contact_cards WHERE contact_id=?1",
-            [contact],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(|_| "Could not read contacts.")?
-        .is_some();
-    let result = if exists {
-        db.execute(
-            "UPDATE contact_cards SET manual_card=?2, manual_updated_at=unixepoch() WHERE contact_id=?1",
-            params![contact, envelope],
-        )
-    } else if envelope.is_some() {
-        db.execute(
-            "INSERT INTO contact_cards(contact_id,manual_card,manual_updated_at) VALUES(?1,?2,unixepoch())",
-            params![contact, envelope],
-        )
-    } else {
-        Ok(0)
-    };
-    result
-        .map(|_| ())
-        .map_err(|_| "Could not save this contact.")
+/// Seals edits as the manual copy, or `None` to clear them so the phone's copy shows again.
+pub fn envelope(key: &str, card: Option<&Card>) -> Result<Option<String>, &'static str> {
+    let Some(c) = card else { return Ok(None) };
+    let mut value = json!({
+        "version": 1, "fn": c.name, "org": c.org, "title": c.title,
+        "tel": labeled(&c.phones), "email": labeled(&c.emails), "note": c.note,
+    });
+    if let Some((kind, data)) = &c.photo {
+        value["photo"] = json!({"type": kind, "data": data});
+    }
+    seal(key, &value)
+        .map(Some)
+        .ok_or("Could not seal this contact.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
+    /// What the archive does with `PUT /contacts/{id}/card` from the owner.
+    fn save(db: &Connection, key: &str, id: &str, card: Option<&Card>) -> Result<(), &'static str> {
+        db.execute(
+            "UPDATE contact_cards SET manual_card=?2 WHERE contact_id=?1",
+            params![id, envelope(key, card)?],
+        )
+        .map(drop)
+        .map_err(|_| "save")
+    }
     #[test]
     fn edits_round_trip_and_win_over_the_phone_copy() {
         let db = Connection::open_in_memory().unwrap();
