@@ -107,8 +107,18 @@ pub(crate) struct Entry {
     /// Read on any inbox. External storage engines don't track this yet.
     #[serde(default)]
     read: bool,
+    /// The conversation, sealed reactions and how many files came with it (see `/chats`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reactions: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    attachments: i64,
 }
-pub(crate) const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid, EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=m.id) FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+pub(crate) const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid, EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=m.id), (SELECT chat_id FROM message_chats c WHERE c.message_id=m.id), (SELECT json_group_array(json_object('id',x.id,'envelope',x.envelope)) FROM message_reactions x WHERE x.message_id=m.id), (SELECT count(*) FROM message_attachments a WHERE a.message_id=m.id) FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
 pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: row.get(0)?,
@@ -117,6 +127,12 @@ pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         archived_at: row.get(3)?,
         starred: row.get(4)?,
         read: row.get(6)?,
+        chat_id: row.get(7)?,
+        reactions: row
+            .get::<_, Option<String>>(8)?
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
+        attachments: row.get(9)?,
     })
 }
 #[derive(Deserialize)]
@@ -124,6 +140,8 @@ pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
 struct Page {
     cursor: Option<i64>,
     limit: Option<usize>,
+    /// Only this conversation's messages.
+    chat: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Listing {
@@ -135,11 +153,20 @@ async fn list(
     Query(page): Query<Page>,
 ) -> ApiResult<Json<Listing>> {
     let limit = page.limit.unwrap_or(30);
-    if !(1..=100).contains(&limit) || page.cursor.is_some_and(|n| n <= 0) {
+    if !(1..=100).contains(&limit)
+        || page.cursor.is_some_and(|n| n <= 0)
+        || page
+            .chat
+            .as_deref()
+            .is_some_and(|c| !crate::chats::valid_chat(c))
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
 
     if let Some(remote) = &archive.remote {
+        if page.chat.is_some() {
+            return Err(StatusCode::NOT_IMPLEMENTED);
+        }
         return remote_result(
             remote
                 .messages(page.cursor.unwrap_or(i64::MAX), limit)
@@ -149,10 +176,13 @@ async fn list(
     archive
         .query(move |db| {
             let mut stmt = db.prepare(&format!(
-                "{SELECT} WHERE m.rowid < ?1 ORDER BY m.rowid DESC LIMIT ?2"
+                "{SELECT} WHERE m.rowid < ?1 AND (?3 IS NULL OR m.id IN (SELECT message_id FROM message_chats WHERE chat_id=?3)) ORDER BY m.rowid DESC LIMIT ?2"
             ))?;
-            let mut rows =
-                stmt.query(params![page.cursor.unwrap_or(i64::MAX), (limit + 1) as i64])?;
+            let mut rows = stmt.query(params![
+                page.cursor.unwrap_or(i64::MAX),
+                (limit + 1) as i64,
+                page.chat
+            ])?;
             let mut messages = Vec::new();
             let mut last = 0;
             while let Some(row) = rows.next()? {

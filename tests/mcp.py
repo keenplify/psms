@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as root:
    if "id" in msg:return json.loads(p.stdout.readline())["result"]
   res=call(dict(id=1,method="initialize",params={"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}));assert "tools" in res["capabilities"]
   call(dict(method="notifications/initialized"))
-  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status","cloud_status"}
+  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status","cloud_status","list_chats","save_attachment"}
   def tool(id,name,arguments):
    res=call(dict(id=id,method="tools/call",params={"name":name,"arguments":arguments}))
    return json.loads(res["content"][0]["text"])
@@ -54,6 +54,22 @@ with tempfile.TemporaryDirectory() as root:
   queued=tool(20,"send_message",{"to":"+15550100","body":"On my way"});assert queued["status"]=="queued"
   assert tool(21,"outbox_status",{"id":queued["id"]})["status"]=="queued"
   cliq=json.loads(manage("outbox","send","+15550101","See you"));assert json.loads(manage("outbox","status",cliq["id"]))["status"]=="queued"
+  # Group chats, tapbacks and files from pSMS for Mac, sealed like messages.
+  chat="c"*32;gid=str(uuid.uuid4())
+  with sqlite3.connect(db) as d:
+   d.execute("INSERT INTO chats(id,envelope) VALUES(?,?)",(chat,seal({"title":"Lunch crew","group":True,"members":["+15550142","+15550187"],"identifier":"iMessage;+;chat777"})))
+   d.execute("INSERT INTO messages(id,sender,body) VALUES(?,'papamo:encrypted:v1',?)",(gid,seal({"sender":"+15550187","body":"Look at this","thread":chat,"attachments":[{"type":"image/png","name":"IMG_1.png"}]})))
+   d.execute("INSERT INTO message_chats VALUES(?,?)",(gid,chat))
+   d.execute("INSERT INTO message_reactions(id,message_id,envelope) VALUES(?,?,?)",(str(uuid.uuid4()),gid,seal({"kind":"love","from":"me"})))
+   d.execute("INSERT INTO message_attachments(message_id,idx,envelope) VALUES(?,0,?)",(gid,seal("photo bytes")))
+  d.close()
+  chats=tool(22,"list_chats",{})["chats"];assert chats[0]["title"]=="Lunch crew" and chats[0]["send_to"]=="iMessage;+;chat777" and chats[0]["id"]==chat
+  found=tool(23,"search_messages",{"chat":chat})["messages"];assert [m["id"] for m in found]==[gid]
+  assert found[0]["text"]=="Look at this" and found[0]["reactions"]==[{"kind":"love","from":"me"}] and found[0]["attachments"][0]["name"]=="IMG_1.png" and found[0]["thread"]==chat
+  saved=tool(24,"save_attachment",{"id":gid,"directory":root});assert Path(saved["saved"]).read_bytes()==b'"photo bytes"'
+  assert json.loads(manage("inbox","chats","--key-file",str(kf)))["chats"][0]["members"]==["+15550142","+15550187"]
+  out=Path(root)/"saved.bin";manage("inbox","save",gid,"--key-file",str(kf),"--out",str(out));assert out.read_bytes()==b'"photo bytes"'
+  listed=json.loads(manage("inbox","list","--chat",chat,"--key-file",str(kf)))["messages"];assert listed[0]["body"]=="Look at this" and listed[0]["reactions"][0]["kind"]=="love"
   # Devices-only send API: a send key from a private address queues texts, nothing else works.
   import socket,time,urllib.request,urllib.error
   sock=socket.socket();sock.bind(("127.0.0.1",0));port=sock.getsockname()[1];sock.close()

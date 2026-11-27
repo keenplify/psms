@@ -430,6 +430,13 @@ impl Dashboard {
             list = list.child(heading("General")).children(general);
         }
         let mut messages: Vec<AnyElement> = Vec::new();
+        if cfg!(target_os = "macos")
+            && keep(
+                "messages imessage photos pictures files group chats reactions tapbacks full disk access bluebubbles",
+            )
+        {
+            messages.push(self.messages_row(cx).into_any_element());
+        }
         if keep("notifications alerts new texts messages sound banner") {
             messages.push(self.alerts_row(cx).into_any_element());
         }

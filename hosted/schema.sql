@@ -197,3 +197,32 @@ CREATE TRIGGER archived_messages_webhooks AFTER INSERT ON archived_messages
 UPDATE contact_cards SET phone_updated_at = NULL
  WHERE phone_updated_at < '2026-11-27 09:00:00+00';
 COMMIT;
+-- Photos and other files that came with a text, sealed with the archive key like the message.
+-- pSMS for Mac uploads them after their message; they are deleted with it.
+CREATE TABLE IF NOT EXISTS message_attachments (
+ account_id bigint NOT NULL, message_id text NOT NULL,
+ idx smallint NOT NULL CHECK (idx BETWEEN 0 AND 9),
+ envelope text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (account_id, message_id, idx),
+ FOREIGN KEY (account_id, message_id) REFERENCES archived_messages(account_id, id) ON DELETE CASCADE
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON message_attachments TO psms_runtime;
+-- Conversations and reactions, end-to-end encrypted like messages. A chat's name, members
+-- and Messages identifier are sealed; the server only links rows by an opaque chat ID.
+ALTER TABLE archived_messages ADD COLUMN IF NOT EXISTS chat_id text CHECK (chat_id ~ '^[0-9a-f]{32}$');
+CREATE INDEX IF NOT EXISTS archive_chat ON archived_messages(account_id,chat_id,received_at DESC) WHERE chat_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS chats (
+ account_id bigint NOT NULL REFERENCES accounts ON DELETE CASCADE,
+ id text NOT NULL CHECK (id ~ '^[0-9a-f]{32}$'),
+ envelope text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (account_id, id)
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON chats TO psms_runtime;
+CREATE TABLE IF NOT EXISTS message_reactions (
+ account_id bigint NOT NULL, id text NOT NULL, message_id text NOT NULL,
+ envelope text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY (account_id, id),
+ FOREIGN KEY (account_id, message_id) REFERENCES archived_messages(account_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS message_reactions_message ON message_reactions(account_id,message_id);
+GRANT SELECT,INSERT,UPDATE,DELETE ON message_reactions TO psms_runtime;

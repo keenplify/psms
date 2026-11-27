@@ -14,7 +14,9 @@ macro_rules! env_name {
 }
 #[allow(dead_code)]
 mod app_tokens;
+mod attachments;
 mod cards;
+mod chats;
 mod cli;
 mod cloud;
 mod cloudflare;
@@ -79,6 +81,9 @@ struct Message {
     sender: String,
     body: String,
     contact_id: Option<String>,
+    /// The conversation it belongs to, an opaque ID shared with `/chats`.
+    #[serde(default)]
+    chat_id: Option<String>,
 }
 
 impl Archive {
@@ -96,6 +101,12 @@ impl Archive {
                 tx.execute(
                     "INSERT INTO message_contacts(message_id,contact_id) VALUES(?1,?2)",
                     params![id, contact],
+                )?;
+            }
+            if let Some(chat) = &message.chat_id {
+                tx.execute(
+                    "INSERT INTO message_chats(message_id,chat_id) VALUES(?1,?2)",
+                    params![id, chat],
                 )?;
             }
             tx.commit()?;
@@ -131,6 +142,12 @@ async fn receive(
     }
     if !encryption::accepts(&message.sender, &message.body) {
         return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+    }
+    if let Some(chat) = &mut message.chat_id {
+        chat.make_ascii_lowercase();
+        if !chats::valid_chat(chat) {
+            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+        }
     }
     if let Some(id) = &mut message.contact_id {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -425,6 +442,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )",
     )?;
     db.execute_batch(cards::SCHEMA)?;
+    db.execute_batch(attachments::SCHEMA)?;
+    db.execute_batch(chats::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
     db.execute_batch(device_api::SCHEMA)?;
     db.execute_batch(cloud::SCHEMA)?;
@@ -509,6 +528,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))
         .merge(inbox::routes(&prefix, archive.clone()))
         .merge(cards::routes(&prefix, archive.clone()))
+        .merge(attachments::routes(&prefix, archive.clone()))
+        .merge(chats::routes(&prefix, archive.clone()))
         .merge(outbox::routes(&prefix, archive.clone()))
         .merge(cloud::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))

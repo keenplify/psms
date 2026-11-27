@@ -8,24 +8,43 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// Sends through Messages. The recipient and text are passed as script arguments, never
-/// spliced into the script. Uses the SMS account (Text Message Forwarding) when there is one,
-/// otherwise iMessage.
-#[cfg(target_os = "macos")]
+/// spliced into the script. A person goes through the SMS account (Text Message Forwarding)
+/// when there is one, otherwise iMessage; a group goes to its Messages chat, which BlueBubbles
+/// does the same way without its private helper.
 pub fn send(to: &str, text: &str) -> Result<(), String> {
+    run(to, text, "text")
+}
+/// Sends a file, such as a photo, to a person or a group chat.
+pub fn send_file(to: &str, path: &std::path::Path) -> Result<(), String> {
+    run(to, &path.to_string_lossy(), "file")
+}
+/// Whether a recipient is a Messages chat (a group) rather than a phone number or email.
+pub fn is_chat(to: &str) -> bool {
+    to.contains(";+;") || to.contains(";-;")
+}
+#[cfg(target_os = "macos")]
+fn run(to: &str, payload: &str, kind: &str) -> Result<(), String> {
     const SCRIPT: &str = r#"on run argv
     set target to item 1 of argv
-    set message to item 2 of argv
+    set payload to item 2 of argv
+    set kind to item 3 of argv
+    if kind is "file" then set payload to POSIX file payload
     tell application "Messages"
-        try
-            set chosen to 1st account whose service type = SMS and enabled is true
-        on error
-            set chosen to 1st account whose service type = iMessage and enabled is true
-        end try
-        send message to participant target of chosen
+        if target contains ";+;" or target contains ";-;" then
+            set destination to chat id target
+        else
+            try
+                set chosen to 1st account whose service type = SMS and enabled is true
+            on error
+                set chosen to 1st account whose service type = iMessage and enabled is true
+            end try
+            set destination to participant target of chosen
+        end if
+        send payload to destination
     end tell
 end run"#;
     let out = std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", SCRIPT, "--", to, text])
+        .args(["-e", SCRIPT, "--", to, payload, kind])
         .output()
         .map_err(|_| "Could not start Messages.".to_string())?;
     if out.status.success() {
@@ -36,16 +55,23 @@ end run"#;
         if error.contains("-1743") || error.contains("Not authorized") {
             "Allow pSMS to control Messages in System Settings → Privacy & Security → Automation."
                 .into()
-        } else if error.contains("-1728") || error.contains("Can’t get account") {
-            "Sign in to Messages, and turn on Text Message Forwarding on your iPhone for SMS."
-                .into()
+        } else if error.contains("-1728")
+            || error.contains("Can’t get account")
+            || error.contains("Can’t get chat")
+        {
+            if is_chat(to) {
+                "Messages could not find this group chat on this Mac.".into()
+            } else {
+                "Sign in to Messages, and turn on Text Message Forwarding on your iPhone for SMS."
+                    .into()
+            }
         } else {
-            "Messages could not send this reply.".into()
+            "Messages could not send this.".into()
         },
     )
 }
 #[cfg(not(target_os = "macos"))]
-pub fn send(_: &str, _: &str) -> Result<(), String> {
+fn run(_: &str, _: &str, _: &str) -> Result<(), String> {
     Err("Replies need pSMS for Mac, which sends through the Messages app.".into())
 }
 pub const SUPPORTED: bool = cfg!(target_os = "macos");
@@ -111,7 +137,7 @@ pub fn deliver(api: &Api, key: Option<&str>) -> usize {
         let outcome = match send(to, text) {
             Ok(()) => {
                 sent += 1;
-                if let Some(key) = key {
+                if let Some(key) = key.filter(|_| !is_chat(to)) {
                     let _ = store(api, key, to, text);
                 }
                 json!({"status": "sent"})

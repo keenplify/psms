@@ -123,6 +123,42 @@ class ArchiveTest(unittest.TestCase):
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,contact_id="b"*64))[0],409)
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,id=uuid.uuid4().hex))[0],201)
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,contact_id="invalid"))[0],422)
+                # Attachments: sealed like messages, stored after their message and deleted with it.
+                sealed=msg["body"]
+                third=dict(msg, id=uuid.uuid4().hex)
+                self.assertEqual(self.request("POST","/messages",upload,third)[0],201)
+                photo="/messages/"+third["id"]+"/attachments/0"
+                self.assertEqual(self.request("PUT",photo,upload,{"envelope":sealed})[0],204)
+                self.assertEqual(self.request("PUT","/messages/"+uuid.uuid4().hex+"/attachments/0",upload,{"envelope":sealed})[0],404)
+                self.assertEqual(self.request("PUT","/messages/"+third["id"]+"/attachments/10",upload,{"envelope":sealed})[0],422)
+                self.assertEqual(self.request("PUT",photo,upload,{"envelope":"not base64"})[0],422)
+                self.assertEqual(self.request("GET",photo,upload)[0],401)
+                self.assertEqual(self.request("GET",photo,owner)[1],{"envelope":sealed})
+                big=base64.b64encode(os.urandom(1_200_000)).decode()
+                self.assertEqual(self.request("PUT","/messages/"+third["id"]+"/attachments/1",owner,{"envelope":big})[0],204)
+                self.assertEqual(self.request("DELETE","/messages/"+third["id"],owner)[0],204)
+                self.assertEqual(self.request("GET",photo,owner)[0],404)
+                # Chats and reactions: sealed, linked by opaque IDs, and listed with their messages.
+                chat="c"*32
+                self.assertEqual(self.request("PUT","/chats/"+chat,upload,{"envelope":sealed})[0],204)
+                self.assertEqual(self.request("PUT","/chats/short",upload,{"envelope":sealed})[0],422)
+                self.assertEqual(self.request("GET","/chats",upload)[0],401)
+                self.assertEqual([c["id"] for c in self.request("GET","/chats",owner)[1]["chats"]],[chat])
+                grouped=dict(msg, id=uuid.uuid4().hex, chat_id=chat.upper())
+                self.assertEqual(self.request("POST","/messages",upload,grouped)[0],201)
+                self.assertEqual(self.request("POST","/messages",upload,dict(msg, id=uuid.uuid4().hex, chat_id="zz"))[0],422)
+                tap="/messages/"+grouped["id"]+"/reactions/"+uuid.uuid4().hex
+                self.assertEqual(self.request("PUT",tap,upload,{"envelope":sealed})[0],204)
+                self.assertEqual(self.request("PUT","/messages/"+uuid.uuid4().hex+"/reactions/"+uuid.uuid4().hex,upload,{"envelope":sealed})[0],404)
+                self.assertEqual(self.request("PUT","/messages/"+grouped["id"]+"/attachments/0",upload,{"envelope":sealed})[0],204)
+                listed=self.request("GET","/messages?chat="+chat,owner)[1]["messages"]
+                self.assertEqual(len(listed),1)
+                self.assertEqual((listed[0]["chat_id"],listed[0]["attachments"],[r["envelope"] for r in listed[0]["reactions"]]),(chat,1,[sealed]))
+                self.assertEqual(self.request("GET","/messages?chat=bad",owner)[0],400)
+                self.assertEqual(self.request("DELETE",tap,upload)[0],204)
+                self.assertEqual(self.request("DELETE",tap,upload)[0],404)
+                self.assertNotIn("reactions",self.request("GET","/messages?chat="+chat,owner)[1]["messages"][0])
+                self.assertEqual(self.request("DELETE","/messages/"+grouped["id"],owner)[0],204)
                 # Contact cards: the phone is asked for one until it sends a fresh copy.
                 envelope = msg["body"]
                 self.assertEqual(self.request("POST","/messages",upload,dict(second,id=uuid.uuid4().hex)),(201,{"contact_card":"wanted"}))

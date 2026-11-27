@@ -198,8 +198,28 @@ pub enum Inbox {
         unread: bool,
         #[arg(long)]
         search: Option<String>,
+        /// Only one conversation, by its chat ID (see `inbox chats`).
+        #[arg(long)]
+        chat: Option<String>,
         #[arg(long)]
         key_file: Option<PathBuf>,
+    },
+    /// Group chats and conversations from pSMS for Mac, with their titles and members.
+    Chats {
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Saves a photo or file that came with a message.
+    Save {
+        id: Uuid,
+        /// Which file of the message, from 0.
+        #[arg(long, default_value = "0")]
+        index: u8,
+        #[arg(long)]
+        key_file: PathBuf,
+        /// Where to write it.
+        #[arg(long)]
+        out: PathBuf,
     },
     Show {
         id: Uuid,
@@ -390,11 +410,8 @@ pub async fn newest(path: &Path, opts: &ServerOptions) -> Result<Option<String>>
     )
 }
 fn unlock(entry: &mut Value, key: Option<&str>) {
-    if entry["sender"] == "papamo:encrypted:v1"
-        && let Some((sender, text)) = key.and_then(|k| decrypt::decrypt(k, entry["body"].as_str()?))
-    {
-        entry["sender"] = json!(sender);
-        entry["body"] = json!(text);
+    if let Some(k) = key {
+        decrypt::enrich(entry, k);
     }
 }
 pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()> {
@@ -482,9 +499,13 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                 unread,
                 limit,
                 search,
+                chat,
                 key_file,
             } => {
                 let mut route = format!("/messages?limit={limit}");
+                if let Some(c) = chat {
+                    route.push_str(&format!("&chat={c}"));
+                }
                 if let Some(n) = cursor {
                     route.push_str(&format!("&cursor={n}"));
                 }
@@ -510,6 +531,39 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                         })
                 });
                 println!("{page}");
+            }
+            Inbox::Chats { key_file } => {
+                let key = crate::kit::key_from_file(&key_file)?;
+                let list = api(path, opts, "/chats", None).await?;
+                let chats: Vec<Value> = list["chats"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| decrypt::chat(c, key.trim_end()))
+                    .collect();
+                println!("{}", json!({ "chats": chats }));
+            }
+            Inbox::Save {
+                id,
+                index,
+                key_file,
+                out,
+            } => {
+                let key = crate::kit::key_from_file(&key_file)?;
+                let file = api(
+                    path,
+                    opts,
+                    &format!("/messages/{id}/attachments/{index}"),
+                    None,
+                )
+                .await?;
+                let bytes = decrypt::open_file(
+                    key.trim_end(),
+                    file["envelope"].as_str().unwrap_or_default(),
+                )
+                .ok_or("Could not open this file with that key.")?;
+                std::fs::write(&out, &bytes)?;
+                println!("{}", json!({"saved": out, "bytes": bytes.len()}));
             }
             other => {
                 let (id, body) = match other {

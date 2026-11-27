@@ -5,6 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 const SETUP_SENDER: &str = "pSMS setup";
 const SETUP_BODY: &str = "Setup check: this shortcut can reach your inbox. Incoming texts will appear as their own conversations.";
 
+#[allow(dead_code)]
 pub fn decrypt(key: &str, body: &str) -> Option<(String, String)> {
     open_message(key, body).map(|(sender, text, _)| (sender, text))
 }
@@ -29,6 +30,74 @@ pub fn open_message(key: &str, body: &str) -> Option<(String, String, bool)> {
     }
     let outgoing = json.get("direction").and_then(|d| d.as_str()) == Some("out");
     Some((sender, text, outgoing))
+}
+
+fn open_json(key: &str, envelope: &str) -> Option<serde_json::Value> {
+    let bytes = STANDARD.decode(envelope).ok()?;
+    if bytes.len() <= 28 {
+        return None;
+    }
+    let clear = Aes256Gcm::new_from_slice(key.as_bytes())
+        .ok()?
+        .decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
+        .ok()?;
+    serde_json::from_slice(&clear).ok()
+}
+/// Opens a listed message for the CLI and MCP server: its sender and text, plus what pSMS for
+/// Mac adds (direction, group chat, files, the message it replies to) and its tapbacks.
+#[allow(dead_code)]
+pub fn enrich(entry: &mut serde_json::Value, key: &str) {
+    use serde_json::json;
+    if entry["sender"] != "papamo:encrypted:v1" {
+        return;
+    }
+    let Some(body) = entry["body"].as_str().map(String::from) else {
+        return;
+    };
+    if let Some((sender, text, outgoing)) = open_message(key, &body) {
+        entry["sender"] = json!(sender);
+        entry["body"] = json!(text);
+        if outgoing {
+            entry["direction"] = json!("out");
+        }
+    }
+    if let Some(details) = open_json(key, &body) {
+        for field in ["attachments", "reply_to", "thread", "service", "source"] {
+            if !details[field].is_null() {
+                entry[field] = details[field].clone();
+            }
+        }
+    }
+    if let Some(reactions) = entry["reactions"].as_array().cloned() {
+        entry["reactions"] = json!(
+            reactions
+                .iter()
+                .filter_map(|r| open_json(key, r["envelope"].as_str()?))
+                .map(|r| json!({"kind": r["kind"], "from": r["from"]}))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+/// Opens a listed chat: its title, members and whether it is a group.
+#[allow(dead_code)]
+pub fn chat(row: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    let details = open_json(key, row["envelope"].as_str()?)?;
+    Some(serde_json::json!({
+        "id": row["id"], "title": details["title"], "group": details["group"],
+        "members": details["members"], "send_to": details["identifier"], "updated_at": row["updated_at"],
+    }))
+}
+/// Opens a sealed file.
+#[allow(dead_code)]
+pub fn open_file(key: &str, envelope: &str) -> Option<Vec<u8>> {
+    let bytes = STANDARD.decode(envelope).ok()?;
+    if bytes.len() <= 28 {
+        return None;
+    }
+    Aes256Gcm::new_from_slice(key.as_bytes())
+        .ok()?
+        .decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
+        .ok()
 }
 
 #[cfg(test)]

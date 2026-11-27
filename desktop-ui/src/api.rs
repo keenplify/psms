@@ -4,11 +4,19 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 
+#[derive(Clone)]
 pub struct Api {
     base: String,
     token: String,
 }
 impl Api {
+    #[cfg(test)]
+    pub fn new(base: &str, token: &str) -> Api {
+        Api {
+            base: base.into(),
+            token: token.into(),
+        }
+    }
     /// Finds the running local service for the archive at `path`.
     pub fn local(path: &Path, settings: &Path) -> Option<Api> {
         let mut ready = path.as_os_str().to_os_string();

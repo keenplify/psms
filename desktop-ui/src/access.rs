@@ -776,6 +776,67 @@ impl Dashboard {
                 })),
         )
     }
+    /// Messages on this Mac: photos, group chats, reactions and texts you sent from your phone,
+    /// read the way BlueBubbles reads them. Off until turned on; needs Full Disk Access.
+    pub(super) fn messages_row(&self, cx: &mut Context<Self>) -> Div {
+        let mode = mac_messages::mode(&self.db);
+        let readable = mac_messages::readable();
+        let detail = match (&self.messages_error, mode, readable) {
+            (Some(e), _, _) => e.clone(),
+            (None, mac_messages::Mode::Off, false) => {
+                "Photos, group chats and reactions from Messages. Needs Full Disk Access."
+                    .to_string()
+            }
+            (None, mac_messages::Mode::Off, true) => {
+                "Photos, group chats and reactions from Messages, sealed with your key".to_string()
+            }
+            (None, mac_messages::Mode::Media, _) => format!(
+                "Copying photos, files and group chats · {} so far",
+                mac_messages::copied(&self.db)
+            ),
+            (None, mac_messages::Mode::All, _) => format!(
+                "Copying every iMessage and text, both ways · {} so far",
+                mac_messages::copied(&self.db)
+            ),
+        };
+        let choose = |id: &'static str, label: &'static str, to: mac_messages::Mode| {
+            Button::new(id)
+                .label(label)
+                .when(mode == to, |b| b.primary())
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    match mac_messages::set_mode(&s.db, to) {
+                        Ok(()) => s.messages_error = None,
+                        Err(e) => {
+                            s.messages_error = Some(e);
+                            if !mac_messages::readable() {
+                                let _ = std::process::Command::new("/usr/bin/open")
+                                    .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+                                    .spawn();
+                            }
+                        }
+                    }
+                    cx.notify()
+                }))
+        };
+        self.setting_row(
+            "Messages on this Mac",
+            detail,
+            div()
+                .h_flex()
+                .gap_2()
+                .child(choose("messages-off", "Off", mac_messages::Mode::Off))
+                .child(choose(
+                    "messages-media",
+                    "Photos & groups",
+                    mac_messages::Mode::Media,
+                ))
+                .child(choose(
+                    "messages-all",
+                    "Everything",
+                    mac_messages::Mode::All,
+                )),
+        )
+    }
     /// A notification for each new text while pSMS is open.
     pub(super) fn alerts_row(&self, cx: &mut Context<Self>) -> Div {
         let on = otp::alerts_enabled(&self.db);

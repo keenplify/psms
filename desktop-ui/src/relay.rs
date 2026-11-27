@@ -102,7 +102,7 @@ fn http() -> Result<(tokio::runtime::Runtime, reqwest::Client), &'static str> {
     Ok((rt, client))
 }
 impl Relay {
-    fn call(
+    pub(crate) fn call(
         &self,
         method: reqwest::Method,
         route: &str,
@@ -209,7 +209,11 @@ impl Relay {
                 Some((to, body)) => match replies::send(&to, &body) {
                     Ok(()) => {
                         sent += 1;
-                        if let Some((copy, request)) = replies::sent_copy(&self.key, &to, &body) {
+                        // A group chat's copy comes from Messages, linked to its chat.
+                        if let Some((copy, request)) = (!replies::is_chat(&to))
+                            .then(|| replies::sent_copy(&self.key, &to, &body))
+                            .flatten()
+                        {
                             let _ = self.call(reqwest::Method::POST, "/messages", Some(request));
                             let _ = self.call(
                                 reqwest::Method::POST,
@@ -242,11 +246,16 @@ impl Relay {
     }
     /// One page of sealed messages, newest first, with their contact cards.
     pub fn page(&self, page: i64, size: i64) -> Result<(Value, Value), String> {
-        let messages = self.call(
+        let mut messages = self.call(
             reqwest::Method::GET,
             &format!("/messages?limit={size}&offset={}", page * size),
             None,
         )?;
+        // Conversations from Messages, sealed; an older server has none.
+        messages["chats"] = self
+            .call(reqwest::Method::GET, "/chats", None)
+            .map(|c| c["chats"].clone())
+            .unwrap_or(Value::Null);
         let cards = self
             .call(reqwest::Method::GET, "/contacts/cards", None)
             .unwrap_or(Value::Null);

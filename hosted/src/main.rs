@@ -52,6 +52,15 @@ struct Message {
     sender: String,
     body: String,
     contact_id: Option<String>,
+    /// The conversation, an opaque ID shared with `/chats`.
+    #[serde(default)]
+    chat_id: Option<String>,
+}
+fn valid_chat(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub(crate) fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
@@ -312,10 +321,14 @@ async fn store(
         || m.contact_id
             .as_ref()
             .is_some_and(|v| v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()))
+        || m.chat_id
+            .as_ref()
+            .is_some_and(|c| !valid_chat(&c.to_ascii_lowercase()))
     {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
     let id = m.id.to_string();
+    let chat = m.chat_id.map(|c| c.to_ascii_lowercase());
     let contact = m.contact_id.map(|s| s.to_ascii_lowercase());
     let mut db = a.pool.get().await.map_err(|_| DOWN)?;
     let tx = db.transaction().await.map_err(|_| DOWN)?;
@@ -345,7 +358,7 @@ async fn store(
             return Err(StatusCode::INSUFFICIENT_STORAGE);
         }
     }
-    tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
+    tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id,chat_id) VALUES($1,$2,$3,$4,$5,$6)",&[&user,&id,&m.sender,&m.body,&contact,&chat]).await.map_err(|_|DOWN)?;
     tx.execute(
         "UPDATE sessions SET used_at=coalesce(used_at,now()), last_used_at=now() WHERE digest=$1 AND scope='upload'",
         &[&bearer(&h)?],
@@ -396,6 +409,207 @@ fn valid_contact(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+#[derive(Deserialize)]
+struct Attachment {
+    envelope: String,
+}
+/// The largest sealed attachment (about 1.5 MB of file), and all of an account's together.
+const ATTACHMENT_MAX: usize = 2 * 1024 * 1024;
+const ATTACHMENTS_PER_ACCOUNT: i64 = 100 * 1024 * 1024;
+fn attachment_slot(message: &str, index: i16) -> Option<String> {
+    (0..10)
+        .contains(&index)
+        .then(|| Uuid::parse_str(message).ok())
+        .flatten()
+        .map(|id| id.to_string())
+}
+#[derive(Deserialize)]
+struct Sealed {
+    envelope: String,
+}
+/// A conversation's sealed name, members and Messages identifier, saved by pSMS for Mac.
+async fn put_chat(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+    Json(chat): Json<Sealed>,
+) -> Result<StatusCode, Failure> {
+    if !valid_chat(&id)
+        || chat.envelope.len() > 64 * 1024
+        || !encryption::accepts(encryption::ACTIONS, &chat.envelope)
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let user = identity(&a, &h, true).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    db.execute(
+        "INSERT INTO chats(account_id,id,envelope) VALUES($1,$2,$3)
+         ON CONFLICT(account_id,id) DO UPDATE SET envelope=excluded.envelope, updated_at=now()",
+        &[&user, &id, &chat.envelope],
+    )
+    .await
+    .map_err(|_| DOWN)?;
+    db.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn list_chats(State(a): State<App>, h: HeaderMap) -> Reply {
+    let user = identity(&a, &h, false).await?;
+    let rows = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .query(
+            "SELECT id, envelope, floor(extract(epoch FROM updated_at))::bigint FROM chats WHERE account_id=$1 ORDER BY updated_at DESC",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(Json(json!({"chats": rows.iter().map(|r| json!({
+        "id": r.get::<_, String>(0), "envelope": r.get::<_, String>(1), "updated_at": r.get::<_, i64>(2),
+    })).collect::<Vec<_>>()})))
+}
+fn uuid_text(id: &str) -> Option<String> {
+    Uuid::parse_str(id).ok().map(|u| u.to_string())
+}
+/// A sealed tapback on a message. Reactions hang off their message and don't count as texts.
+async fn put_reaction(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path((message, reaction)): Path<(String, String)>,
+    Json(sealed): Json<Sealed>,
+) -> Result<StatusCode, Failure> {
+    let (Some(message), Some(reaction)) = (uuid_text(&message), uuid_text(&reaction)) else {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    };
+    if sealed.envelope.len() > 8 * 1024
+        || !encryption::accepts(encryption::ACTIONS, &sealed.envelope)
+    {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let user = identity(&a, &h, true).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let count: Option<i64> = db
+        .query_opt(
+            "SELECT (SELECT count(*) FROM message_reactions WHERE account_id=$1 AND message_id=$2) FROM archived_messages WHERE account_id=$1 AND id=$2",
+            &[&user, &message],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .map(|r| r.get(0));
+    match count {
+        None => return Err(StatusCode::NOT_FOUND),
+        Some(n) if n >= 100 => return Err(StatusCode::PAYLOAD_TOO_LARGE),
+        _ => {}
+    }
+    let stored = db
+        .execute(
+            "INSERT INTO message_reactions(account_id,id,message_id,envelope) VALUES($1,$2,$3,$4)
+             ON CONFLICT(account_id,id) DO UPDATE SET envelope=excluded.envelope
+             WHERE message_reactions.message_id=excluded.message_id",
+            &[&user, &reaction, &message, &sealed.envelope],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if stored == 0 {
+        return Err(StatusCode::CONFLICT);
+    }
+    db.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn delete_reaction(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path((message, reaction)): Path<(String, String)>,
+) -> Result<StatusCode, Failure> {
+    let (Some(message), Some(reaction)) = (uuid_text(&message), uuid_text(&reaction)) else {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    };
+    let user = identity(&a, &h, true).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let removed = db
+        .execute(
+            "DELETE FROM message_reactions WHERE account_id=$1 AND id=$2 AND message_id=$3",
+            &[&user, &reaction, &message],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if removed == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    db.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+/// pSMS for Mac uploads a photo or file that came with a text, after the text itself.
+async fn put_attachment(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path((message, index)): Path<(String, i16)>,
+    Json(upload): Json<Attachment>,
+) -> Result<StatusCode, Failure> {
+    let message = attachment_slot(&message, index)
+        .filter(|_| {
+            upload.envelope.len() <= ATTACHMENT_MAX
+                && encryption::accepts(encryption::ACTIONS, &upload.envelope)
+        })
+        .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+    let user = identity(&a, &h, true).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let used: i64 = db
+        .query_one(
+            "SELECT coalesce(sum(length(envelope)),0)::bigint FROM message_attachments WHERE account_id=$1",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .get(0);
+    if used + upload.envelope.len() as i64 > ATTACHMENTS_PER_ACCOUNT {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let stored = db
+        .execute(
+            "INSERT INTO message_attachments(account_id,message_id,idx,envelope)
+             SELECT $1,$2,$3,$4 WHERE EXISTS (SELECT 1 FROM archived_messages WHERE account_id=$1 AND id=$2)
+             ON CONFLICT(account_id,message_id,idx) DO UPDATE SET envelope=excluded.envelope",
+            &[&user, &message, &index, &upload.envelope],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if stored == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    db.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
+        .await
+        .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn get_attachment(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path((message, index)): Path<(String, i16)>,
+) -> Reply {
+    let message = attachment_slot(&message, index).ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+    let user = identity(&a, &h, false).await?;
+    let row = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .query_opt(
+            "SELECT envelope FROM message_attachments WHERE account_id=$1 AND message_id=$2 AND idx=$3",
+            &[&user, &message, &index],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(json!({"envelope": row.get::<_, String>(0)})))
 }
 /// A phone saves its address-book copy with its upload token; an inbox saves edits with the
 /// owner session. An empty envelope from an inbox clears the edits.
@@ -467,6 +681,8 @@ async fn cards(State(a): State<App>, h: HeaderMap) -> Reply {
 struct Page {
     offset: Option<u32>,
     limit: Option<u16>,
+    /// Only this conversation's messages.
+    chat: Option<String>,
 }
 async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> Reply {
     let limit = i64::from(page.limit.unwrap_or(1000));
@@ -474,11 +690,45 @@ async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> R
         return Err(StatusCode::BAD_REQUEST);
     }
     let offset = i64::from(page.offset.unwrap_or(0));
+    if page.chat.as_deref().is_some_and(|c| !valid_chat(c)) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let user = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint,read_at IS NOT NULL,starred FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
+    let rows = db
+        .query(
+            "SELECT m.id,m.sender,m.body,m.contact_id,extract(epoch from m.received_at)::bigint,m.read_at IS NOT NULL,m.starred,m.chat_id,
+                    (SELECT json_agg(json_build_object('id',x.id,'envelope',x.envelope))::text FROM message_reactions x WHERE x.account_id=m.account_id AND x.message_id=m.id),
+                    (SELECT count(*) FROM message_attachments t WHERE t.account_id=m.account_id AND t.message_id=m.id)
+             FROM archived_messages m WHERE m.account_id=$1 AND ($4::text IS NULL OR m.chat_id=$4)
+             ORDER BY m.received_at DESC,m.id LIMIT $2 OFFSET $3",
+            &[&user, &(limit + 1), &offset, &page.chat],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    let messages: Vec<Value> = rows
+        .iter()
+        .take(limit as usize)
+        .map(|r| {
+            let mut m = json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4),"read":r.get::<_,bool>(5),"starred":r.get::<_,bool>(6)});
+            if let Some(chat) = r.get::<_, Option<String>>(7) {
+                m["chat_id"] = json!(chat);
+            }
+            if let Some(reactions) = r
+                .get::<_, Option<String>>(8)
+                .and_then(|j| serde_json::from_str::<Value>(&j).ok())
+            {
+                m["reactions"] = reactions;
+            }
+            let files: i64 = r.get(9);
+            if files > 0 {
+                m["attachments"] = json!(files);
+            }
+            m
+        })
+        .collect();
     Ok(Json(
-        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4),"read":r.get::<_,bool>(5),"starred":r.get::<_,bool>(6)})).collect::<Vec<_>>()}),
+        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":messages}),
     ))
 }
 // Phone upload tokens for Settings. A token is identified by the start of its digest, never the token.
@@ -693,6 +943,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             put(put_card).layer(DefaultBodyLimit::max(512 * 1024)),
         )
         .route("/messages/{id}", delete(remove).patch(update))
+        .route("/chats", get(list_chats))
+        .route("/chats/{id}", put(put_chat))
+        .route(
+            "/messages/{id}/reactions/{reaction}",
+            put(put_reaction).delete(delete_reaction),
+        )
+        .route(
+            "/messages/{id}/attachments/{index}",
+            get(get_attachment)
+                .put(put_attachment)
+                .layer(DefaultBodyLimit::max(ATTACHMENT_MAX + 4096)),
+        )
         .route("/events", get(browser::inbox_events))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(app.clone(), throttle))

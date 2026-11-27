@@ -35,10 +35,26 @@ struct Search {
     before: Option<i64>,
     /// Cursor returned by a previous search. Each call scans one bounded page.
     cursor: Option<i64>,
+    /// Only one conversation, by the chat ID from list_chats.
+    chat: Option<String>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct MessageId {
     id: String,
+}
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AttachmentRef {
+    /// The message's UUID.
+    id: String,
+    /// Which file of the message, from 0. Defaults to 0.
+    index: Option<u8>,
+    /// Folder to save into. Defaults to Downloads.
+    directory: Option<String>,
+}
+fn dirs_downloads() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|h| std::path::PathBuf::from(h).join("Downloads"))
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct Contacts {
@@ -158,20 +174,21 @@ impl Inbox {
         entry
     }
     fn view(&self, mut entry: Value) -> Value {
-        let plain = if entry["sender"] == "papamo:encrypted:v1" {
-            self.key
-                .as_ref()
-                .and_then(|k| crate::decrypt::decrypt(k, entry["body"].as_str()?))
-        } else {
-            None
-        };
+        let sealed = entry["sender"] == "papamo:encrypted:v1";
+        if let Some(key) = &self.key {
+            crate::decrypt::enrich(&mut entry, key);
+        }
+        // Only sealed messages the key opened are readable; anything else stays locked.
+        let opened = sealed && entry["sender"] != "papamo:encrypted:v1";
+        let text = entry["body"].clone();
         if let Some(obj) = entry.as_object_mut() {
             obj.remove("body");
-            obj.remove("sender");
-            obj.insert("locked".into(), json!(plain.is_none()));
-            if let Some((sender, text)) = plain {
-                obj.insert("sender".into(), json!(sender));
-                obj.insert("text".into(), json!(text));
+            obj.insert("locked".into(), json!(!opened));
+            if opened {
+                obj.insert("text".into(), text);
+            } else {
+                obj.remove("sender");
+                obj.remove("reactions");
             }
         }
         entry
@@ -227,6 +244,9 @@ impl Inbox {
             return Err("before must be later than after".into());
         }
         let mut params = vec![("limit".into(), "25".into())];
+        if let Some(chat) = &q.chat {
+            params.push(("chat".into(), chat.clone()))
+        }
         if let Some(c) = q.cursor {
             params.push(("cursor".into(), c.to_string()))
         }
@@ -378,7 +398,7 @@ impl Inbox {
         Ok(json!({"id": id, "reset": true}).to_string())
     }
     #[tool(
-        description = "Queue a text message. pSMS for Mac sends it through Messages and keeps the sent copy in the archive. Returns an outbox ID; check it with outbox_status. Only send what the user asked you to send."
+        description = "Queue a text message to a phone number, email, or a group chat's send_to from list_chats. pSMS for Mac sends it through Messages and keeps the sent copy in the archive. Returns an outbox ID; check it with outbox_status. Only send what the user asked you to send."
     )]
     async fn send_message(&self, Parameters(q): Parameters<Outgoing>) -> Result<String, String> {
         Ok(self
@@ -390,6 +410,46 @@ impl Inbox {
             )
             .await?
             .to_string())
+    }
+    #[tool(
+        description = "List conversations from pSMS for Mac: group chats with their titles and members. Use a chat's id with search_messages' chat filter, and its send_to with send_message to reply in that group."
+    )]
+    async fn list_chats(&self) -> Result<String, String> {
+        let key = self.key()?;
+        let list = self.get("/chats", &[]).await?;
+        let chats: Vec<Value> = list["chats"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| crate::decrypt::chat(c, key))
+            .collect();
+        Ok(json!({ "chats": chats }).to_string())
+    }
+    #[tool(
+        description = "Save a photo or file that came with a message to a folder on this computer (Downloads by default) and return its path. Messages list their files under attachments, numbered from 0."
+    )]
+    async fn save_attachment(
+        &self,
+        Parameters(q): Parameters<AttachmentRef>,
+    ) -> Result<String, String> {
+        let key = self.key()?;
+        let id = Uuid::parse_str(&q.id).map_err(|_| "Invalid message UUID")?;
+        let index = q.index.unwrap_or(0);
+        if index > 9 {
+            return Err("Messages have at most 10 files, numbered 0 to 9.".into());
+        }
+        let file = self
+            .get(&format!("/messages/{id}/attachments/{index}"), &[])
+            .await?;
+        let bytes = crate::decrypt::open_file(key, file["envelope"].as_str().unwrap_or_default())
+            .ok_or("Could not open this file with the configured key.")?;
+        let dir = match q.directory {
+            Some(d) => std::path::PathBuf::from(d),
+            None => dirs_downloads().ok_or("Could not find Downloads; pass a directory.")?,
+        };
+        let path = dir.join(format!("psms-{id}-{index}"));
+        std::fs::write(&path, &bytes).map_err(|e| format!("Could not save the file: {e}"))?;
+        Ok(json!({"saved": path, "bytes": bytes.len()}).to_string())
     }
     #[tool(
         description = "Show whether this self-hosted archive is connected to papamo.dev Plus, when it last synced, and how many messages it backed up and received."

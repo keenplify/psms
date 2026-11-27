@@ -16,6 +16,7 @@ mod hosted_login;
 mod kit;
 mod login;
 mod mac_contacts;
+mod mac_messages;
 #[path = "../../src/onboard.rs"]
 mod onboard;
 mod otp;
@@ -61,6 +62,8 @@ pub(crate) const READ_OR_REPLY: &str = if replies::SUPPORTED {
 } else {
     "read your texts"
 };
+/// Photos from Messages by (message, file index); `None` while loading.
+type Photos = std::collections::HashMap<(String, usize), Option<Arc<gpui_kit::Image>>>;
 const GUIDE: &str = "https://www.papamo.dev/docs/papamo-sms";
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -107,6 +110,8 @@ struct Dashboard {
     /// A papamo.dev inbox shown instead of the local archive, through the relay's connection.
     hosted: Option<Arc<relay::Relay>>,
     hosted_cards: std::collections::HashMap<String, cards::Entry>,
+    /// A papamo.dev inbox's conversations from Messages, opened.
+    hosted_chats: std::collections::HashMap<String, serde_json::Value>,
     /// What the shown hosted page reflects: newest message time, page and star filter.
     hosted_seen: Option<(i64, i64, bool)>,
     /// A computer token from setup, waiting for the recovery words to open the hosted inbox.
@@ -120,6 +125,11 @@ struct Dashboard {
     settings_path: PathBuf,
     /// Senders already matched to this Mac's Contacts this session, and when all were last.
     contacts_done: std::collections::HashSet<String>,
+    /// Photos from Messages, opened once and kept for this session; `None` while loading
+    /// or when one could not be opened.
+    photos: std::cell::RefCell<Photos>,
+    /// Why copying from Messages last failed, shown in Settings.
+    messages_error: Option<String>,
     /// Texts already seen, so each new one notifies once, and which inbox they came from.
     alert_seen: std::collections::HashSet<String>,
     alert_source: Option<(bool, bool)>,
@@ -307,6 +317,109 @@ impl Dashboard {
 
     /// The next batch of senders to match with this Mac's Contacts: everyone every 30 minutes,
     /// and anyone new in between.
+    /// Where this inbox's files come from, and the key that opens them.
+    fn files_source(&self) -> Option<(mac_messages::Inbox, String)> {
+        match (&self.hosted, self.api(), &self.session_key) {
+            (Some(h), _, _) => Some((mac_messages::Inbox::Hosted(h.clone()), h.key().to_string())),
+            (None, Some(a), Some(k)) => Some((mac_messages::Inbox::Local(a), k.clone())),
+            _ => None,
+        }
+    }
+    /// Starts opening a photo the reading pane wants; it appears when ready.
+    fn want_photo(&self, id: &str, index: usize, mime: &str, cx: &mut Context<Self>) {
+        let slot = (id.to_string(), index);
+        if self.photos.borrow().contains_key(&slot) {
+            return;
+        }
+        self.photos.borrow_mut().insert(slot.clone(), None);
+        let Some((inbox, key)) = self.files_source() else {
+            return;
+        };
+        let format = match mime {
+            "image/png" => gpui_kit::ImageFormat::Png,
+            "image/gif" => gpui_kit::ImageFormat::Gif,
+            "image/webp" => gpui_kit::ImageFormat::Webp,
+            _ => gpui_kit::ImageFormat::Jpeg,
+        };
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let bytes = cx
+                .background_executor()
+                .spawn(async move { inbox.attachment(&key, &id, index) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                if let Ok(bytes) = bytes {
+                    s.photos.borrow_mut().insert(
+                        slot,
+                        Some(Arc::new(gpui_kit::Image::from_bytes(format, bytes))),
+                    );
+                }
+                cx.notify()
+            });
+        })
+        .detach();
+    }
+    /// Saves a file that came with a message to Downloads.
+    fn save_file(&mut self, id: String, index: usize, name: String, cx: &mut Context<Self>) {
+        let Some((inbox, key)) = self.files_source() else {
+            self.notice = "Unlock the archive to save files.".into();
+            return;
+        };
+        self.notice = format!("Saving {name}…");
+        cx.spawn(async move |this, cx| {
+            let saved = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = inbox.attachment(&key, &id, index)?;
+                    let dir = std::env::var_os("HOME")
+                        .map(|h| PathBuf::from(h).join("Downloads"))
+                        .ok_or("Could not find Downloads.")?;
+                    let safe: String = name
+                        .chars()
+                        .map(|c| {
+                            if matches!(c, '/' | '\\' | ':') {
+                                '_'
+                            } else {
+                                c
+                            }
+                        })
+                        .collect();
+                    let path = dir.join(if safe.is_empty() {
+                        "pSMS file".into()
+                    } else {
+                        safe
+                    });
+                    std::fs::write(&path, bytes)
+                        .map_err(|_| "Could not save the file.".to_string())?;
+                    Ok::<_, String>(path)
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.notice = match saved {
+                    Ok(path) => format!("Saved to {}.", path.display()),
+                    Err(e) => e,
+                };
+                cx.notify()
+            });
+        })
+        .detach();
+    }
+    /// What copying from Messages needs: the key, settings and where records go.
+    fn messages_job(&self) -> Option<(String, PathBuf, mac_messages::Inbox)> {
+        if !cfg!(target_os = "macos") || mac_messages::mode(&self.db) == mac_messages::Mode::Off {
+            return None;
+        }
+        let inbox = match (&self.hosted, self.api()) {
+            (Some(h), _) => mac_messages::Inbox::Hosted(h.clone()),
+            (None, Some(a)) => mac_messages::Inbox::Local(a),
+            (None, None) => return None,
+        };
+        let key = match &self.hosted {
+            Some(h) => h.key().to_string(),
+            None => self.session_key.clone()?,
+        };
+        Some((key, self.settings_path.clone(), inbox))
+    }
     #[allow(clippy::type_complexity)]
     fn contacts_job(
         &mut self,
@@ -396,7 +509,11 @@ impl Dashboard {
                 .filter(|(page, star, _)| *page == self.page && *star == self.starred)
                 .map(|(_, _, items)| items.clone())
                 .unwrap_or_default();
-            Ok(archive::group(records, self.session_key.as_deref()))
+            Ok(archive::group(
+                records,
+                self.session_key.as_deref(),
+                &self.hosted_chats,
+            ))
         } else {
             archive::read(
                 &self.db,
@@ -957,6 +1074,62 @@ impl Dashboard {
             Err(e) => self.notice = e.into(),
         }
         cx.notify();
+    }
+    /// The recipient of the open conversation: a group's Messages chat, or a person's number.
+    fn reply_target(&self) -> Option<String> {
+        self.threads
+            .iter()
+            .find(|t| Some(&t.key) == self.selected.as_ref())
+            .map(|t| {
+                t.chat
+                    .as_ref()
+                    .filter(|(_, d)| d["group"] == true)
+                    .and_then(|(_, d)| d["identifier"].as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| t.title.clone())
+            })
+    }
+    /// Sends a photo or file through Messages. With Messages on this Mac turned on, its copy
+    /// comes back into the archive like any other.
+    fn send_attachment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(to) = self.reply_target() else {
+            return;
+        };
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Send".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.sending = true;
+                cx.notify()
+            });
+            let sent = cx
+                .background_executor()
+                .spawn(async move { replies::send_file(&to, &path) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.sending = false;
+                s.notice = match sent {
+                    Ok(()) if mac_messages::mode(&s.db) == mac_messages::Mode::Off => {
+                        "Sent. Turn on Settings → Messages on this Mac to keep files you send."
+                            .into()
+                    }
+                    Ok(()) => "Sent.".into(),
+                    Err(e) => e,
+                };
+                cx.notify()
+            });
+        })
+        .detach();
     }
     fn choose_photo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -1626,24 +1799,120 @@ impl Dashboard {
                 }
                 // Replies from this computer sit on the right in blue, as in Messages.
                 let outgoing = m.outgoing;
-                feed = feed.child(
-                    div()
-                        .v_flex()
-                        .when(outgoing, |d| d.items_end())
-                        .when(!outgoing, |d| d.items_start())
-                        .gap_1()
-                        .child(actions)
-                        .child(
-                            div()
-                                .max_w(px(520.))
-                                .px_4()
-                                .py_2()
+                let mut column = div()
+                    .v_flex()
+                    .when(outgoing, |d| d.items_end())
+                    .when(!outgoing, |d| d.items_start())
+                    .gap_1()
+                    .child(actions);
+                // In a group chat, who said it.
+                if let Some(from) = &m.from {
+                    let name = self
+                        .session_key
+                        .as_ref()
+                        .map(|k| replies::contact_id(from, k))
+                        .and_then(|c| self.cards.get(&c))
+                        .map(|e| e.card.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| from.clone());
+                    column = column.child(self.caption(name));
+                }
+                // The message this one replies to, quoted.
+                if let Some(quoted) = m
+                    .reply_to
+                    .as_ref()
+                    .and_then(|r| t.items.iter().find(|x| &x.id == r))
+                {
+                    let line: String = quoted.text.chars().take(80).collect();
+                    column = column.child(
+                        div()
+                            .max_w(px(520.))
+                            .px_3()
+                            .border_l_2()
+                            .border_color(self.color(0xd3d8df))
+                            .text_sm()
+                            .text_color(self.color(MUTED))
+                            .child(format!("↪ {line}")),
+                    );
+                }
+                // Photos inline; other files as a button that saves them.
+                for (index, (mime, name, left_out)) in m.files.iter().enumerate() {
+                    if *left_out {
+                        column =
+                            column.child(self.caption(format!("{name} was too large to copy.")));
+                    } else if mime.starts_with("image/") {
+                        self.want_photo(&m.id, index, mime, cx);
+                        let photo = self
+                            .photos
+                            .borrow()
+                            .get(&(m.id.clone(), index))
+                            .cloned()
+                            .flatten();
+                        column = column.child(match photo {
+                            Some(image) => div()
                                 .rounded_xl()
-                                .when(outgoing, |d| d.bg(rgb(0x0a7cff)).text_color(rgb(0xffffff)))
-                                .when(!outgoing, |d| d.bg(self.color(0xe9eaee)))
-                                .child(text),
-                        ),
-                );
+                                .overflow_hidden()
+                                .child(img(image).max_w(px(320.)).max_h(px(320.))),
+                            None => div()
+                                .w(px(220.))
+                                .h(px(150.))
+                                .rounded_xl()
+                                .bg(self.color(0xe9eaee))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_color(self.color(MUTED))
+                                .child("Opening photo…"),
+                        });
+                    } else {
+                        let (id, name) = (m.id.clone(), name.clone());
+                        column = column.child(
+                            Button::new(("file", i * 16 + index))
+                                .icon(IconName::ArrowDown)
+                                .label(format!("Save {name}"))
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    s.save_file(id.clone(), index, name.clone(), cx);
+                                    cx.notify()
+                                })),
+                        );
+                    }
+                }
+                if !text.trim().is_empty() || m.files.is_empty() {
+                    column = column.child(
+                        div()
+                            .max_w(px(520.))
+                            .px_4()
+                            .py_2()
+                            .rounded_xl()
+                            .when(outgoing, |d| d.bg(rgb(0x0a7cff)).text_color(rgb(0xffffff)))
+                            .when(!outgoing, |d| d.bg(self.color(0xe9eaee)))
+                            .child(text),
+                    );
+                }
+                // Tapbacks, as Messages shows them under the bubble.
+                if !m.reactions.is_empty() {
+                    let line = m
+                        .reactions
+                        .iter()
+                        .map(|(kind, who)| {
+                            let who = if who == "me" {
+                                "You".to_string()
+                            } else {
+                                self.session_key
+                                    .as_ref()
+                                    .map(|k| replies::contact_id(who, k))
+                                    .and_then(|c| self.cards.get(&c))
+                                    .map(|e| e.card.name.clone())
+                                    .filter(|n| !n.is_empty())
+                                    .unwrap_or_else(|| who.clone())
+                            };
+                            format!("{} {who}", archive::reaction_emoji(kind))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    column = column.child(self.caption(line));
+                }
+                feed = feed.child(column);
             }
             pane = pane.child(feed);
         } else {
@@ -1676,7 +1945,11 @@ impl Dashboard {
             && self.session_key.is_some()
             && !self.external
             && thread.is_some_and(|t| {
-                !t.items[0].locked && t.title.chars().any(|c| c.is_ascii_digit() || c == '@')
+                !t.items[0].locked
+                    && (t.title.chars().any(|c| c.is_ascii_digit() || c == '@')
+                        || t.chat
+                            .as_ref()
+                            .is_some_and(|(_, d)| d["identifier"].is_string()))
             });
         let hint = if !replies::SUPPORTED {
             "Replies need pSMS for Mac, which sends through the Messages app."
@@ -1694,6 +1967,14 @@ impl Dashboard {
                     div()
                         .h_flex()
                         .gap_2()
+                        .child(
+                            Button::new("reply-attach")
+                                .icon(IconName::Plus)
+                                .ghost()
+                                .tooltip("Send a photo or file")
+                                .disabled(self.sending)
+                                .on_click(cx.listener(|s, _, w, cx| s.send_attachment(w, cx))),
+                        )
                         .child(div().flex_1().child(Input::new(&self.reply)))
                         .child(
                             Button::new("reply-send")
@@ -1725,10 +2006,18 @@ impl Dashboard {
             }
             Some(to)
         } else {
+            // A group chat from Messages goes to its chat; a person to their number.
             self.threads
                 .iter()
                 .find(|t| Some(&t.key) == self.selected.as_ref())
-                .map(|t| t.title.clone())
+                .map(|t| {
+                    t.chat
+                        .as_ref()
+                        .filter(|(_, d)| d["group"] == true)
+                        .and_then(|(_, d)| d["identifier"].as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| t.title.clone())
+                })
         };
         let (Some(key), Some(to)) = (self.session_key.clone(), to) else {
             return;
@@ -1753,6 +2042,10 @@ impl Dashboard {
                 .background_executor()
                 .spawn(async move {
                     replies::send(&to, &text)?;
+                    if replies::is_chat(&to) {
+                        // Messages on this Mac stores the group's copy, linked to its chat.
+                        return Ok(());
+                    }
                     match (hosted, api) {
                         (Some(h), _) => h.store_sent(&to, &text).map_err(|_| {
                             "Sent, but could not save the reply in your inbox.".to_string()
@@ -2059,28 +2352,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             if starred && r["starred"] != true {
                                                                 continue;
                                                             }
-                                                            let (Some(id), Some(sender), Some(body), Some(at)) = (
-                                                                r["id"].as_str(),
-                                                                r["sender"].as_str(),
-                                                                r["body"].as_str(),
-                                                                r["received_at"].as_i64(),
-                                                            ) else {
-                                                                continue;
-                                                            };
+                                                            let Some(at) = r["received_at"].as_i64() else { continue };
                                                             let Some((time, when)) = archive::times(&s.db, at) else { continue };
-                                                            records.push((
-                                                                id.to_string(),
-                                                                sender.to_string(),
-                                                                body.to_string(),
-                                                                time,
-                                                                r["starred"] == true,
-                                                                r["contact_id"].as_str().map(String::from),
-                                                                r["read"] == true,
-                                                                when,
-                                                            ));
+                                                            if let Some(record) = archive::Record::from_api(r, time, when) {
+                                                                records.push(record);
+                                                            }
                                                         }
                                                         s.external_page = Some((page, starred, records));
                                                         s.hosted_cards = cards::from_hosted(&cards, h.key());
+                                                        s.hosted_chats = archive::chats_from_api(&messages, h.key());
                                                         s.hosted_seen = Some((newest, page, starred));
                                                     }
                                                     Err(e) => {
@@ -2128,6 +2408,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         break;
                                     }
                                 }
+                                // Photos, group chats, reactions and your own sent texts from Messages.
+                                if let Ok(Some((key, settings, inbox))) = this.update(cx, |s, _| s.messages_job()) {
+                                    let result = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            let db = Connection::open(&settings).map_err(|_| "Could not open settings.".to_string())?;
+                                            mac_messages::sync(&db, &key, &inbox)
+                                        })
+                                        .await;
+                                    if this
+                                        .update(cx, |s, cx| {
+                                            match result {
+                                                Ok(0) => s.messages_error = None,
+                                                Ok(_) => {
+                                                    s.messages_error = None;
+                                                    s.hosted_seen = None;
+                                                    s.refresh();
+                                                }
+                                                Err(e) => s.messages_error = Some(e),
+                                            }
+                                            cx.notify();
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
                                 let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
                                 if let Some((path,page,starred))=params {
                                     let result=cx.background_executor().spawn(async move {
@@ -2144,7 +2451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let mut records=Vec::new();
                                             for r in v["messages"].as_array()? {
                                                 let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get::<_,String>(0)).ok()?;
-                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time.clone(),r["starred"].as_i64()==Some(1),None,true,time));
+                                                records.push(archive::Record{id:r["id"].as_str()?.into(),provider:r["sender"].as_str()?.into(),body:r["body"].as_str()?.into(),time:time.clone(),starred:r["starred"].as_i64()==Some(1),read:true,when:time,..Default::default()});
                                             }
                                             Some((records,v["newest"].as_i64()?))
                                         }) {s.external_page=Some((page,starred,v.0));s.external_newest=v.1;} else {s.external_page=None;s.notice="Could not reach the selected database.".into();}
@@ -2215,6 +2522,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             session_key: hosted.as_ref().map(|h| h.key().to_string()),
                             hosted,
                             hosted_cards: Default::default(),
+                            hosted_chats: Default::default(),
                             hosted_seen: None,
                             pending_hosted: None,
                             upsell_closed: false,
@@ -2224,6 +2532,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             settings_path: settings_path.clone(),
                             contacts_done: Default::default(),
                             alert_seen: Default::default(),
+                            messages_error: None,
+                            photos: Default::default(),
                             alert_source: None,
                             contacts_full_at: None,
                             reading_shown: Default::default(),
