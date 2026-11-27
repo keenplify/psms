@@ -107,9 +107,37 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Notification for each new text | Settings → Notifications: while the tab is open and unlocked, even in the background (browser notifications, no push service yet) | Settings → Notifications (on by default); codes keep their own Copy/Type alert | — (no long-running UI) | — |
 | Start a new conversation | ✎ beside the star filter: To field, then the usual composer; queued for pSMS for Mac | + beside Messages (pSMS for Mac only, since Messages sends it) | `outbox send` to any number | `send_message` to any number |
 | Open at login, installing updates on start | — | Settings → Open at login, off until turned on (LaunchAgent, Windows Run key, XDG autostart); a login launch installs a waiting update straight away | — | — |
-| Photos (MMS) and group texts | Gap | Gap | Gap | Gap: the iPhone Shortcut sends only the sender and text. Whether iOS exposes attachments and group members to a Message automation needs a test on a real iPhone; pSMS for Mac could instead read them from Messages with Full Disk Access |
+| Photos, files and group chats | Yes: group threads with each sender, photos opened in the browser, files to save | Yes, and sends photos and files through Messages | `inbox chats`, `inbox list --chat`, `inbox save` | `list_chats`, `save_attachment`, `search_messages` chat filter |
+| Tapbacks and threaded replies | Yes (shown) | Yes (shown) | In `inbox list` | In message results |
+| Reply in a group chat | Yes: queued to the group's Messages chat | Yes | `outbox send <send_to>` | `send_message` to `send_to` |
+| Send later | 🕘 beside Send | Later beside Send | `outbox send --at +2h` | `send_message` `send_at`/`delay_minutes` |
 | Names and photos from the computer's address book | — (browsers can't read it) | macOS: Settings → Mac Contacts sends a sealed card (`"copy":"device"`, stored as the phone copy) for each sender it matches; Windows and Linux have no address book API to read yet | Gap: reads cards, can't read Mac Contacts | Gap: reads cards only |
 | Switch between papamo.dev and this computer's archive | Hosted only | Settings → Where your texts live, with a confirmation that explains the switch, plus Sync to web (Plus) | `manage cloud connect` | — |
+
+## BlueBubbles parity
+
+pSMS aims to be BlueBubbles with end-to-end encryption, self-hosting and an iPhone Shortcut route for people without a Mac. BlueBubbles' server (Apache-2.0) reads `~/Library/Messages/chat.db` and sends through Messages with AppleScript; a separate Private API helper needs System Integrity Protection turned off. pSMS for Mac does the first part the same way (`desktop-ui/src/mac_messages.rs`, Settings → Messages on this Mac, Full Disk Access) and stores everything sealed: the server sees opaque chat IDs and envelopes only.
+
+| BlueBubbles feature | pSMS | Notes |
+| --- | --- | --- |
+| Receive iMessage and SMS, both directions | Yes (Everything mode) | Polls new chat.db rows; Photos & groups mode keeps the Shortcut for plain texts and replaces its copy when both arrive |
+| Text stored in `attributedBody` | Yes | Same NSString/typedstream approach as BlueBubbles' parser |
+| Attachments | Yes | Sealed per message (`/messages/{id}/attachments/{n}`), HEIC converted to JPEG, 1.5 MB per file, 100 MB per papamo.dev account |
+| Group chats and members | Yes | `/chats` holds sealed title, members and the Messages chat identifier |
+| Tapbacks (receive) | Yes | Sealed `/messages/{id}/reactions/{id}`; removing one deletes it; they don't count as texts |
+| Threaded replies (receive) | Yes | `reply_to` inside the sealed record |
+| Send text, send attachments, send to groups | Yes on the Mac; text to groups from every surface | AppleScript `chat id` and `POSIX file`, as BlueBubbles does without its helper. Gap: sending a file from web, CLI or MCP needs an upload path to the Mac |
+| Scheduled messages | Yes | Outbox `send_at` on both servers |
+| Contacts | Yes | Phone cards, Mac Contacts and edits |
+| Webhooks, REST API, push | Yes | Webhooks, `/messages`, SSE and papamo.dev events |
+| Search, statistics | Search yes; statistics gap | — |
+| Edits and unsends (receive) | Gap | BlueBubbles re-polls by date; pSMS reads new rows only. Needs a date-based pass that seals an edit record |
+| Delivered/read receipts for sent texts | Gap | Same reason as edits |
+| Group renames, participant changes as events | Gap | Rows with `item_type` 1–3 are skipped today |
+| Send tapbacks, typing indicators, edit, unsend, mark read on the Mac, rename groups, add or remove people, effects, mentions, Focus status | Not planned for now | All need BlueBubbles' Private API, which needs SIP disabled. That weakens a core macOS protection, which conflicts with pSMS's privacy promise; revisit only as an explicit, warned opt-in |
+| Find My, FaceTime | Not planned | Out of scope for a message archive |
+
+Run `cargo test --offline -- --ignored copies_messages_into_a_running_archive` in `desktop-ui` with `PSMS_MESSAGES_TEST="<api url> <owner token>"` against a running local service to exercise the whole copy path with a synthetic chat.db.
 
 ## Product scope
 
