@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory() as root:
   for _ in range(40):
    if dev("/outbox","x"*64,{"to":"1","body":"x"})[0]:break
    time.sleep(0.25)
-  owner=sqlite3.connect(db).execute("SELECT owner FROM local_credentials").fetchone()[0]
+  od=sqlite3.connect(db);owner=od.execute("SELECT owner FROM local_credentials").fetchone()[0];od.close()
   assert dev("/outbox",owner,{"to":"+15550100","body":"x"})[0]==401
   s2,q=dev("/outbox",key,{"to":"+15550100","body":"From my laptop"});assert s2==202,s2
   assert dev("/outbox/"+q["id"],key)[1]["status"]=="queued"
