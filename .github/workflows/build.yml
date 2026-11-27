@@ -1,26 +1,53 @@
 name: Native builds
-# Builds every platform for release tags, pull requests and manual runs. Pushes to main are
-# checked locally first (cargo fmt, clippy, tests and the smoke tests) to save Actions minutes.
+# Releases start from scripts/release.sh (macOS) or scripts/release.ps1 (Windows): the computer
+# builds and tests its own platform, uploads it to a draft release and runs this workflow with
+# `skip` set to that target, so Actions builds only the rest. A manual run with no `skip` builds
+# everything. Pushes to main are checked locally first, so they build nothing here.
 on:
-  push:
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish, such as v0.1.24. Empty builds without releasing.
+        required: false
+        default: ''
+      skip:
+        description: Comma-separated targets already built locally and uploaded to the draft release.
+        required: false
+        default: ''
 permissions:
   contents: read
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          SKIP: ${{ inputs.skip }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          targets = [
+              {"os": "ubuntu-24.04", "target": "x86_64-unknown-linux-gnu", "ext": ""},
+              {"os": "ubuntu-24.04-arm", "target": "aarch64-unknown-linux-gnu", "ext": ""},
+              {"os": "macos-15", "target": "aarch64-apple-darwin", "ext": ""},
+              {"os": "windows-2025", "target": "x86_64-pc-windows-msvc", "ext": ".exe"},
+          ]
+          skip = {t.strip() for t in os.environ.get("SKIP", "").split(",") if t.strip()}
+          print("matrix=" + json.dumps({"include": [t for t in targets if t["target"] not in skip]}))
+          PY
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-15, target: aarch64-apple-darwin }
-          - { os: windows-2025, target: x86_64-pc-windows-msvc, ext: .exe }
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - run: rustup update stable
       - run: cargo +stable test --locked --target ${{ matrix.target }}
       - run: cargo +stable build --locked --release --target ${{ matrix.target }}
@@ -80,18 +107,35 @@ jobs:
             target/${{ matrix.target }}/release/psms-macos-*.dmg
 
 
-# Release only after all platform builds and smoke tests pass.
+# Release only after all platform builds and smoke tests pass, adding the targets built locally.
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: inputs.tag != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
       - uses: actions/download-artifact@v4
         with:
           path: binaries
+      - name: Add targets built locally
+        run: |
+          set -euo pipefail
+          mkdir -p local
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release download "$RELEASE_TAG" --pattern 'local-papamo-sms-*.tar.gz' --dir local || true
+          fi
+          for bundle in local/*.tar.gz; do
+            [ -e "$bundle" ] || continue
+            tar -xzf "$bundle" -C binaries
+          done
+          ls binaries
       - uses: dtolnay/rust-toolchain@stable
       - name: Build hosted API for regional Linux servers
         run: cargo build --release --locked --manifest-path hosted/Cargo.toml
@@ -100,11 +144,16 @@ jobs:
           PSMS_RELEASE_SIGNING_KEY: ${{ secrets.PSMS_RELEASE_SIGNING_KEY }}
         run: python scripts/package-release.py
       - name: Publish verified tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --generate-notes --title "pSMS $RELEASE_TAG"
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+            for bundle in local/*.tar.gz; do
+              [ -e "$bundle" ] && gh release delete-asset "$RELEASE_TAG" "$(basename "$bundle")" --yes
+            done
+          else
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --generate-notes --title "pSMS $RELEASE_TAG"
+          fi
           gh release edit "$RELEASE_TAG" --draft=false
   rollout:
     needs: release
@@ -117,7 +166,7 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.PSMS_ROLLOUT_KEY }}
           HOST_KEYS: ${{ secrets.PSMS_ROLLOUT_HOST_KEYS }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail

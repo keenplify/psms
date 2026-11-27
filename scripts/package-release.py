@@ -11,7 +11,7 @@ import tomllib
 import zipfile
 
 version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
-if os.environ["GITHUB_REF_NAME"] != "v" + version:
+if (os.environ.get("RELEASE_TAG") or os.environ["GITHUB_REF_NAME"]) != "v" + version:
     raise SystemExit("Tag must match Cargo.toml")
 out = Path("dist")
 out.mkdir(exist_ok=True)

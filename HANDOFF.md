@@ -138,6 +138,15 @@ Desktop setup no longer makes its own hosted shortcut or key. "Use my papamo.dev
 
 `desktop-ui/src/otp.rs` finds 4–8 digit codes in texts that mention a code (or the `@site #code` autofill format) and skips amounts, times and phone numbers. New local messages are checked while the archive is unlocked; the relay checks papamo.dev or remote inboxes using `newest` from `POST /outbox/claim`, fetching `GET /messages?limit=5` only when it grows. On macOS the app (as pSMS.app) posts a UserNotifications banner with **Type code** and **Copy code**; development builds without a bundle fall back to an osascript banner. With Accessibility permission, a CGEvent tap swallows a plain Tab and types the code while it is under a minute old. Codes live only in memory. Settings → One-time codes turns this off and asks for Accessibility.
 
+### Releasing
+
+GitHub Actions builds nothing on pushes to main; check locally first (AGENTS.md). To release, raise the version in `Cargo.toml` and `desktop-ui/Cargo.toml`, commit, and run from a clean `main`:
+
+- **On the Mac:** `scripts/release.sh`. It runs every check and test, builds macOS with the disk image and, with Docker running (`colima start --vm-type vz --vz-rosetta`), both Linux architectures through `scripts/build-linux.sh` (Ubuntu 24.04 image in `packaging/linux/build.Dockerfile`, same steps as CI). Actions then builds only Windows.
+- **On Windows:** `scripts/release.ps1`. It builds Windows with the NSIS installer (and Linux, given Docker and Git Bash). Actions then builds only macOS.
+
+Both upload `local-papamo-sms-<target>.tar.gz` bundles to a draft release and start `build.yml` with `tag` and `skip`. Its `plan` job drops the skipped targets, the `release` job unpacks the bundles next to the Actions artifacts, signs everything with the key that exists only in Actions, publishes, and `rollout` updates the servers. A manual run of `build.yml` with a tag and no `skip` builds everything on Actions. Server-only changes still go out with `scripts/deploy-local.sh`.
+
 ### macOS installer
 
 `packaging/macos/build-dmg.sh` builds `psms-macos-arm64.dmg` with pSMS.app (launcher `Contents/MacOS/launch` runs `psms desktop`; the CLI is inside as `psms`). It is ad-hoc signed, not notarized, so the first open needs right-click → Open or System Settings → Open Anyway. Name nothing in `Contents/MacOS` `pSMS`: the file system is case-insensitive and it would replace `psms`. CI builds it on the macOS runner and the release attaches it; the tar.gz stays available.
