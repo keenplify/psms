@@ -1,6 +1,6 @@
 [package]
 name = "psms-desktop"
-version = "0.1.20"
+version = "0.1.21"
 edition = "2024"
 license = "MIT"
 
@@ -24,6 +24,14 @@ bip39 = "3.0.0"
 flate2 = "1.1.11"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 pdf-writer = "0.15.0"
+
+[target."cfg(target_os = \"macos\")".dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSSet", "NSError", "NSObject", "NSBundle", "NSDictionary", "NSArray"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter", "block2", "bitflags"] }
+block2 = "0.6"
+core-graphics = "0.24"
+core-foundation = "0.10"
 
 [target."cfg(windows)".build-dependencies]
 winresource = "0.1.34"

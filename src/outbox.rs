@@ -100,9 +100,18 @@ async fn claim(State(archive): State<Archive>, headers: HeaderMap) -> Reply {
                 Ok(json!({"id": r.get::<_, String>(0)?, "to": r.get::<_, String>(1)?, "body": r.get::<_, String>(2)?}))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
+            .and_then(|items| {
+                let newest: Option<i64> =
+                    db.query_row("SELECT max(archived_at) FROM messages", [], |r| r.get(0))?;
+                Ok((items, newest))
+            })
         })
         .await?;
-    Ok((StatusCode::OK, Json(json!({"messages": items}))))
+    let (items, newest) = items;
+    Ok((
+        StatusCode::OK,
+        Json(json!({"messages": items, "newest": newest})),
+    ))
 }
 
 #[derive(Deserialize)]

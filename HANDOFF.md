@@ -100,6 +100,7 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Connect a self-hosted archive to papamo.dev (Pro) | Reads and replies to the synced copy | Settings → papamo.dev Pro (connect, restore, disconnect) | `manage cloud connect/status/restore/disconnect` | `cloud_status` |
 | Team inboxes (Pro) | Settings → Team inboxes; open a shared inbox | Gap: desktop opens self-hosted archives only | Gap | Gap |
 | Managed webhooks (Pro) | Settings → Webhooks, delivery log, retry | Gap: self-hosted keeps its own webhooks in Settings | Gap | Gap |
+| One-time code alerts | Browser extension (autofill) | Native notification with Copy code / Type code; Tab types the code for a minute (macOS; Windows and Linux show a plain notification and copy the code) | — | — |
 | Devices-only send API (LAN, Tailscale) | — (hosted) | Settings → Your devices, send key | `manage devices`, `access create send` | — (configuration) |
 
 ## Product scope
@@ -126,6 +127,10 @@ Pro (plan id `plus`, shown as Pro, 5,000 messages) and Enterprise (everything in
 - Team inboxes (hosted `src/teams.rs`): owners add members by account number; members send `x-psms-inbox: <owner id>` (the site proxy adds it from the inbox picked in Settings) and unlock with the owner's recovery words. Saved keys are kept per inbox in the browser.
 - Managed webhooks (hosted `src/webhooks.rs`): up to 10 HTTPS destinations; a database trigger queues `message.created` deliveries for plans with webhooks; every region's worker claims due deliveries with `SKIP LOCKED`, pins DNS to a public address (private, loopback, link-local, CGNAT and metadata addresses are refused), sends `{delivery_id, event, message_id}` with the destination's secret as a bearer token, and retries with backoff for 10 attempts. `GET /webhooks/deliveries` is the log; `POST …/{id}/replay` retries.
 - Reply from anywhere already works for any account: queued texts wait on papamo.dev until the Mac is back, and pSMS opens at login.
+
+### One-time codes on the desktop
+
+`desktop-ui/src/otp.rs` finds 4–8 digit codes in texts that mention a code (or the `@site #code` autofill format) and skips amounts, times and phone numbers. New local messages are checked while the archive is unlocked; the relay checks papamo.dev or remote inboxes using `newest` from `POST /outbox/claim`, fetching `GET /messages?limit=5` only when it grows. On macOS the app (as pSMS.app) posts a UserNotifications banner with **Type code** and **Copy code**; development builds without a bundle fall back to an osascript banner. With Accessibility permission, a CGEvent tap swallows a plain Tab and types the code while it is under a minute old. Codes live only in memory. Settings → One-time codes turns this off and asks for Accessibility.
 
 ### macOS installer
 

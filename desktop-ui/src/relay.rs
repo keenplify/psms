@@ -171,8 +171,15 @@ impl Relay {
         Ok(relay)
     }
     /// Sends what is waiting, reports each result, and saves sent texts back to the inbox.
-    pub fn run_once(&self) -> Result<usize, String> {
+    pub fn run_once(&self, codes: Option<&mut Option<i64>>) -> Result<usize, String> {
         let batch = self.call(reqwest::Method::POST, "/outbox/claim", None)?;
+        if let (Some(seen), Some(newest)) = (codes, batch["newest"].as_i64()) {
+            match *seen {
+                Some(before) if newest > before => self.announce_codes(before),
+                _ => {}
+            }
+            *seen = Some(newest);
+        }
         let mut sent = 0;
         for item in batch["messages"].as_array().into_iter().flatten() {
             let Some(id) = item["id"].as_str() else {
@@ -217,6 +224,34 @@ impl Relay {
             );
         }
         Ok(sent)
+    }
+}
+
+impl Relay {
+    /// Announces one-time codes in texts newer than `after` (Unix seconds).
+    fn announce_codes(&self, after: i64) {
+        let Ok(page) = self.call(reqwest::Method::GET, "/messages?limit=5", None) else {
+            return;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        for m in page["messages"].as_array().into_iter().flatten() {
+            let at = m["received_at"]
+                .as_i64()
+                .or(m["archived_at"].as_i64())
+                .unwrap_or_default();
+            if at <= after || now - at > crate::otp::RECENT_SECS {
+                continue;
+            }
+            if let (Some(id), Some(body)) = (m["id"].as_str(), m["body"].as_str())
+                && let Some((sender, text, false)) = crate::archive::open_message(&self.key, body)
+                && let Some(code) = crate::otp::code(&text)
+            {
+                crate::otp::announce(id, &sender, &code);
+            }
+        }
     }
 }
 
@@ -306,6 +341,7 @@ pub fn start(settings: PathBuf) {
     }
     std::thread::spawn(move || {
         let mut cached: Option<Relay> = None;
+        let mut newest: Option<i64> = None;
         loop {
             std::thread::sleep(Duration::from_secs(5));
             let Ok(db) = Connection::open_with_flags(&settings, OpenFlags::SQLITE_OPEN_READ_WRITE)
@@ -320,7 +356,7 @@ pub fn start(settings: PathBuf) {
                 cached = load(&db);
             }
             let Some(relay) = &cached else { continue };
-            let result = relay.run_once();
+            let result = relay.run_once(crate::otp::enabled(&db).then_some(&mut newest));
             let _ = db.execute(
                 "UPDATE desktop_relay SET checked_at=unixepoch(), sent=sent+?1, error=?2 WHERE id=1",
                 rusqlite::params![
@@ -360,7 +396,7 @@ mod live {
         let config = std::env::var("PSMS_RELAY_TEST").unwrap();
         let (base, token) = config.split_once(' ').unwrap();
         let relay = Relay::check(base, token, &"0".repeat(32)).unwrap();
-        assert_eq!(relay.run_once().unwrap(), 0);
+        assert_eq!(relay.run_once(None).unwrap(), 0);
     }
 }
 

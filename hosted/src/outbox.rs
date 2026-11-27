@@ -130,9 +130,18 @@ pub async fn claim(State(a): State<App>, h: HeaderMap) -> Reply {
         )
         .await
         .map_err(|_| DOWN)?;
+    // Lets the Mac fetch messages only when something new arrived (for one-time code alerts).
+    let newest: Option<i64> = db
+        .query_one(
+            "SELECT floor(extract(epoch FROM max(received_at)))::bigint FROM archived_messages WHERE account_id=$1",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .get(0);
     Ok(Json(json!({"messages": rows.iter().map(|r| json!({
         "id": r.get::<_, String>(0), "envelope": r.get::<_, Option<String>>(1),
-    })).collect::<Vec<_>>()})))
+    })).collect::<Vec<_>>(), "newest": newest})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

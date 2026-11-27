@@ -5385,17 +5385,23 @@ dependencies = [
 
 [[package]]
 name = "psms-desktop"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.23.1",
  "bip39",
+ "block2 0.6.2",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
  "flate2",
  "getrandom 0.4.3",
  "gpui-kit",
  "hostname",
  "image",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "pdf-writer",
  "plist",
  "reqwest",

@@ -16,6 +16,7 @@ mod hosted_login;
 mod kit;
 #[path = "../../src/onboard.rs"]
 mod onboard;
+mod otp;
 #[path = "../../src/recovery.rs"]
 mod recovery;
 mod relay;
@@ -76,6 +77,8 @@ struct Dashboard {
     relay_token: Entity<InputState>,
     relay_kit: Option<String>,
     relay_busy: bool,
+    /// The newest message already checked for one-time codes.
+    code_rowid: i64,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -218,7 +221,44 @@ impl Dashboard {
             .child(text.into())
     }
 
+    /// Announces one-time codes in texts that arrived since the last check.
+    fn check_codes(&mut self) {
+        if self.external {
+            return;
+        }
+        let Some(key) = self.session_key.clone() else {
+            return;
+        };
+        let since = self.code_rowid;
+        let rows: Vec<(i64, String, String)> = self
+            .db
+            .prepare("SELECT rowid,id,body FROM messages WHERE rowid>?1 AND sender='papamo:encrypted:v1' AND archived_at>unixepoch()-?2 ORDER BY rowid")
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![since, otp::RECENT_SECS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Ok(newest) =
+            self.db
+                .query_row("SELECT coalesce(max(rowid),0) FROM messages", [], |r| {
+                    r.get(0)
+                })
+        {
+            self.code_rowid = newest;
+        }
+        if !otp::enabled(&self.db) {
+            return;
+        }
+        for (_, id, body) in rows {
+            if let Some((sender, text, false)) = archive::open_message(&key, &body)
+                && let Some(code) = otp::code(&text)
+            {
+                otp::announce(&id, &sender, &code);
+            }
+        }
+    }
     fn refresh(&mut self) {
+        self.check_codes();
         let page = if self.external {
             let records = self
                 .external_page
@@ -1549,6 +1589,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // if storage selection was interrupted, including setups from older releases.
     let step = if step == 1 { 0 } else { step };
     let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+    // Only texts that arrive from now on are checked for one-time codes.
+    let code_rowid: i64 = if external {
+        0
+    } else {
+        db.query_row("SELECT coalesce(max(rowid),0) FROM messages", [], |r| {
+            r.get(0)
+        })?
+    };
     if !settings {
         relay::start(settings_path.clone());
     }
@@ -1556,6 +1604,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            if !settings {
+                otp::start();
+            }
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -1728,6 +1779,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             relay_token,
                             relay_kit: None,
                             relay_busy: false,
+                            code_rowid,
                             expiry: Some(30),
                             session_key: None,
                             unlock_box: false,

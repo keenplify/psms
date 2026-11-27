@@ -40,7 +40,7 @@ impl Dashboard {
             .gap_3()
             .min_w_0()
             .mb_5()
-            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.relay_view(cx)).child(self.cloud_view(cx)).child(self.heading("Access tokens"));
+            .child(button("appearance",if self.dark{"Use light mode"}else{"Use dark mode"}).on_click(cx.listener(|s,_,w,cx|{let dark=!s.dark;if s.db.execute("INSERT INTO desktop_appearance(id,dark) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET dark=excluded.dark",[dark]).is_ok(){s.dark=dark;Theme::change(if dark{ThemeMode::Dark}else{ThemeMode::Light},Some(w),cx);}else{s.notice="Could not save appearance.".into()}cx.notify()}))).child(self.codes_view(cx)).child(self.relay_view(cx)).child(self.cloud_view(cx)).child(self.heading("Access tokens"));
         let mut choices = div().h_flex().gap_2().child(self.caption("Expiration"));
         for (index, (label, days)) in [("7 days", Some(7)), ("30 days", Some(30)), ("Never", None)]
             .into_iter()
@@ -537,5 +537,48 @@ impl Dashboard {
             });
         })
         .detach();
+    }
+}
+
+impl Dashboard {
+    /// One-time codes: a notification when a text with a code arrives, and Tab to type it.
+    fn codes_view(&self, cx: &mut Context<Self>) -> Div {
+        let on = otp::enabled(&self.db);
+        let mut view = div()
+            .v_flex()
+            .gap_2()
+            .min_w_0()
+            .child(self.heading("One-time codes"))
+            .child(self.caption(
+                "When a text with a verification code arrives, pSMS shows a notification. Press Tab within a minute to type the code into any app, or choose Copy code. Codes stay in memory only.",
+            ));
+        let mut row = div().h_flex().gap_2().child(
+            Button::new("codes-toggle")
+                .label(if on {
+                    "Turn off code notifications"
+                } else {
+                    "Turn on code notifications"
+                })
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if otp::set_enabled(&s.db, !on).is_err() {
+                        s.notice = "Could not save this setting.".into()
+                    }
+                    cx.notify()
+                })),
+        );
+        if on && replies::SUPPORTED && !otp::can_type() {
+            row = row.child(
+                Button::new("codes-allow")
+                    .primary()
+                    .label("Allow typing with Tab")
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        otp::request_typing_permission();
+                        s.notice = "Turn on pSMS in Privacy & Security → Accessibility, then come back. Tab starts working right away.".into();
+                        cx.notify()
+                    })),
+            );
+            view = view.child(self.caption("Typing with Tab needs Accessibility permission. The Copy and Type buttons on the notification work without it."));
+        }
+        view.child(row)
     }
 }
