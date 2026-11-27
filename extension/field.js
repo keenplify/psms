@@ -62,6 +62,8 @@
         box.dispatchEvent(new Event("input",{bubbles:true}));box.dispatchEvent(new Event("change",{bubbles:true}));
       }
       clear();
+      // Then put the cursor there, so pressing Return submits the code.
+      (targets.at(-1)?.[0] ?? el).focus();
     };
     root.append(button);document.documentElement.append(host);position();
     expiresTimer=setTimeout(clear,Math.max(0,data.expires-Date.now()));
@@ -107,13 +109,26 @@
     }
     void check(); poll(); subscribe();
   }
-  document.addEventListener("focusin",e=>focus(e.target),true);
-  document.addEventListener("focusout",()=>setTimeout(()=>{if(field && document.activeElement!==field && document.activeElement!==host)clear()},0),true);
-  document.addEventListener("visibilitychange",()=>focus(document.activeElement));
+  // Fields closed with Escape stay closed until you focus them yourself.
+  const dismissed=new WeakSet();
+  const visible=el=>{const r=el.getBoundingClientRect();return r.width>0 && r.height>0 && r.bottom>0 && r.top<innerHeight && getComputedStyle(el).visibility!=="hidden"};
+  // No click needed: show the suggestion under the first code field on screen.
+  function scan(){
+    if(host || field || document.visibilityState!=="visible") return;
+    const fields=[...document.querySelectorAll("input")].filter(el=>!dismissed.has(el) && eligible(el) && visible(el));
+    const pick=fields.find(el=>el.autocomplete.includes("one-time-code")) ?? fields[0];
+    if(pick) focus(pick);
+  }
+  let scanTimer;
+  const later=()=>{clearTimeout(scanTimer);scanTimer=setTimeout(scan,400)};
+  new MutationObserver(later).observe(document.documentElement,{childList:true,subtree:true});
+  document.addEventListener("focusin",e=>{if(e.target===host)return;dismissed.delete(e.target);if(eligible(e.target) && e.target!==field)focus(e.target)},true);
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")later();else clear()});
   document.addEventListener("input",e=>{if(e.target===field && field.value)clear()},true);
-  document.addEventListener("keydown",e=>{if(e.key==="Escape")clear()},true);
+  document.addEventListener("keydown",e=>{if(e.key==="Escape" && field){dismissed.add(field);clear()}},true);
   window.addEventListener("pagehide",clear);
   window.addEventListener("resize",position);
-  window.addEventListener("scroll",position,true);
-  focus(document.activeElement);
+  window.addEventListener("scroll",()=>{position();later()},true);
+  if(eligible(document.activeElement))focus(document.activeElement);
+  later();
 })();
