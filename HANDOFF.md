@@ -73,6 +73,30 @@ On **iPad**, cover portrait and landscape Safari, Files download, account menu, 
 Store captures under `ios-<version>/iphone/`, `ipados-<version>/portrait/` and `ipados-<version>/landscape/`. Record device, runtime, Actions version, locale, and simulator versus hardware. Capture simulator frames with `xcrun simctl io <UDID> screenshot <file>.png`. Check Shortcuts, Actions and trigger availability in each runtime; capture missing steps on physical hardware. Use a real incoming SMS for delivery evidence. Simulator APNs injection tests a different trigger. Keep recovery phrases, account passwords, raw phone configuration, real messages, and private share links out of published screenshots.
 
 
+## Feature parity
+
+AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms/inbox; Desktop is the GPUI app on a self-hosted archive; CLI and MCP are `psms` subcommands. "—" marks a feature that does not apply there. Close the remaining gaps or explain them here.
+
+| Feature | Web | Desktop | CLI | MCP |
+| --- | --- | --- | --- | --- |
+| Read conversations | Yes | Yes | `manage inbox` | search and get tools |
+| Unlock with the 12 words or key | Yes | Yes | key file | key at launch |
+| Unlock with the recovery kit PDF | Yes | Yes | Gap | Gap |
+| Star messages | Gap | Yes | `manage inbox` | star filter (read-only) |
+| Read and unread status | Yes (hosted) | Gap | Gap | Gap |
+| New messages without refreshing | pushed | polls the local file | — | — |
+| Contact names and photos | Yes | Yes (SQLite storage) | Gap | Gap |
+| Edit contacts | Yes, with photo | Yes, no photo upload yet | Gap | — (read-only server) |
+| Labelled phone numbers and emails | Yes | Yes | Gap | Gap |
+| Connect a phone | QR and setup page | self-hosted setup | `onboard` | — |
+| Recovery kit again | Settings | setup only | Gap | — |
+| Appearance | Settings | Settings | `manage theme` | — |
+| Browser autofill | Settings | Access tokens | `manage access` | — |
+| Scoped tokens, webhooks, sync timing | — (hosted has none) | Settings | `manage` | — |
+| Connected phones list | Settings | — (one upload token) | `manage access` | — |
+| Hosted archive | Yes | Gap: desktop opens self-hosted archives only | Gap | Gap |
+| Replies | Gap | Gap (next: Messages via AppleScript) | Gap | — |
+
 ## Product scope
 
 Each recipient has a separate encrypted archive. Bundled SQLite is the default. Settings and first-run onboarding also support PostgreSQL, MySQL, MariaDB and SQL Server. The original SQLite file stays available for backup after migration. Verify the active destination with `psms storage status`.
