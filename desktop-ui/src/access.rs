@@ -244,8 +244,20 @@ impl Dashboard {
             if let Some(error) = status.error {
                 view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
             }
+            let at_login = relay::opens_at_login();
             return view.child(
-                div().h_flex().child(
+                div().h_flex().gap_2().child(
+                    Button::new("relay-login")
+                        .label(if at_login { "Opens at login ✓" } else { "Open pSMS at login" })
+                        .on_click(cx.listener(move |s, _, _, cx| {
+                            s.notice = match relay::set_open_at_login(!at_login) {
+                                Ok(()) if at_login => "pSMS no longer opens at login.".into(),
+                                Ok(()) => "pSMS now opens at login, so queued texts send as soon as this Mac is back.".into(),
+                                Err(e) => e.into(),
+                            };
+                            cx.notify()
+                        })),
+                ).child(
                     Button::new("relay-stop")
                         .icon(IconName::Ban)
                         .label("Stop sending from this Mac")
@@ -349,7 +361,9 @@ impl Dashboard {
                 for field in [&self.relay_words, &self.relay_token] {
                     field.update(cx, |i, cx| i.set_value("", window, cx));
                 }
-                self.notice = "This Mac now sends the texts you queue. Messages may ask for permission the first time.".into();
+                // Start with the Mac, so texts queued while it was off go out when it is back.
+                let _ = relay::set_open_at_login(true);
+                self.notice = "This Mac now sends the texts you queue, and pSMS opens at login. Messages may ask for permission the first time.".into();
             }
             Err(e) => self.notice = e,
         }

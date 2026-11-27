@@ -78,11 +78,8 @@ pub async fn status(State(a): State<App>, h: HeaderMap, Path(id): Path<Uuid>) ->
 /// Waiting and recent texts, newest first, so an inbox can show their progress.
 pub async fn list(State(a): State<App>, h: HeaderMap) -> Reply {
     let user = identity(&a, &h, false).await?;
-    let rows = a
-        .pool
-        .get()
-        .await
-        .map_err(|_| DOWN)?
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let rows = db
         .query(
             "SELECT id,status,error,envelope,floor(extract(epoch FROM created_at))::bigint FROM outbox
              WHERE account_id=$1 AND (status IN ('queued','sending','failed') OR finished_at > now() - interval '1 day')
@@ -91,14 +88,31 @@ pub async fn list(State(a): State<App>, h: HeaderMap) -> Reply {
         )
         .await
         .map_err(|_| DOWN)?;
+    let seen: Option<i64> = db
+        .query_one(
+            "SELECT floor(extract(epoch FROM max(last_used_at)))::bigint FROM sessions
+             WHERE account_id=$1 AND scope='computer' AND expires_at>now()",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .get(0);
     Ok(Json(json!({"messages": rows.iter().map(|r| json!({
         "id": r.get::<_, String>(0), "status": r.get::<_, String>(1), "error": r.get::<_, Option<String>>(2),
         "envelope": r.get::<_, Option<String>>(3), "created_at": r.get::<_, i64>(4),
-    })).collect::<Vec<_>>()})))
+    })).collect::<Vec<_>>(), "computer_seen_at": seen})))
 }
 pub async fn claim(State(a): State<App>, h: HeaderMap) -> Reply {
     let user = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
+    // The inbox shows when the sending Mac last checked in, so a waiting reply explains itself.
+    db.execute(
+        "UPDATE sessions SET last_used_at=now() WHERE digest=$1 AND scope='computer'
+           AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')",
+        &[&crate::bearer(&h)?],
+    )
+    .await
+    .map_err(|_| DOWN)?;
     db.execute(
         "UPDATE outbox SET status='queued', claimed_at=NULL
          WHERE account_id=$1 AND status='sending' AND claimed_at < now() - interval '5 minutes'",

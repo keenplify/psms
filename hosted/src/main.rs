@@ -51,7 +51,7 @@ struct Message {
     contact_id: Option<String>,
 }
 
-fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())

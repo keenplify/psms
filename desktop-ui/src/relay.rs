@@ -363,3 +363,59 @@ mod live {
         assert_eq!(relay.run_once().unwrap(), 0);
     }
 }
+
+/// Opens pSMS when you log in, so texts queued while the Mac was off send as soon as it is back.
+#[cfg(target_os = "macos")]
+fn login_agent() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/LaunchAgents/dev.papamo.psms.plist"))
+}
+#[cfg(target_os = "macos")]
+pub fn opens_at_login() -> bool {
+    login_agent().is_some_and(|p| p.exists())
+}
+#[cfg(target_os = "macos")]
+pub fn set_open_at_login(on: bool) -> Result<(), &'static str> {
+    let agent = login_agent().ok_or("Could not find your home folder.")?;
+    if !on {
+        return match std::fs::remove_file(&agent) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err("Could not turn off opening at login.")
+            }
+            _ => Ok(()),
+        };
+    }
+    let cli = std::env::current_exe()
+        .ok()
+        .map(|p| p.with_file_name("psms"))
+        .filter(|p| p.exists())
+        .ok_or("Could not find the psms program next to this app.")?;
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>dev.papamo.psms</string>
+<key>ProgramArguments</key><array><string>{}</string><string>desktop</string></array>
+<key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+"#,
+        escape(&cli.to_string_lossy())
+    );
+    std::fs::create_dir_all(agent.parent().ok_or("Could not open LaunchAgents.")?)
+        .and_then(|_| std::fs::write(&agent, plist))
+        .map_err(|_| "Could not turn on opening at login.")
+}
+#[cfg(not(target_os = "macos"))]
+pub fn opens_at_login() -> bool {
+    false
+}
+#[cfg(not(target_os = "macos"))]
+pub fn set_open_at_login(_: bool) -> Result<(), &'static str> {
+    Err("Opening at login is set up by the installer on this system.")
+}
