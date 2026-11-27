@@ -1,6 +1,6 @@
 # pSMS (Papamo SMS)
 
-pSMS is an MIT-licensed, self-hosted message archive written in Rust. Its REST API accepts encrypted uploads. iPhone Shortcuts capture is available today, and Android capture is planned. Each recipient has a separate archive. Bundled SQLite works immediately. PostgreSQL, MySQL, MariaDB and SQL Server can host the authoritative archive in native tables. A sync webhook can write changes to a database of your choice through a compatible receiver.
+pSMS is an open-source (AGPL-3.0), self-hosted message archive written in Rust. Its REST API accepts encrypted uploads. iPhone Shortcuts capture is available today, and Android capture is planned. Each recipient has a separate archive. Bundled SQLite works immediately. PostgreSQL, MySQL, MariaDB and SQL Server can host the authoritative archive in native tables. A sync webhook can write changes to a database of your choice through a compatible receiver.
 
 [Download pSMS](https://www.papamo.dev/sms) · [Setup guide, REST API and webhook contract](https://www.papamo.dev/docs/papamo-sms)
 
@@ -103,7 +103,12 @@ Run `cargo build --locked --release` on the target system. CI builds and tests L
 
 ## License
 
-MIT.
+pSMS is open source under the [GNU Affero General Public License, version 3](LICENSE) (AGPL-3.0-only). Copyright 2026 Papamo Software.
+
+- You may use, change and self-host pSMS for any purpose, including inside a company.
+- If you distribute pSMS, or let people use a modified version over a network (for example as a hosted service), you must offer them the complete source code of your version under the same license.
+
+Releases up to and including v0.1.24 were published under the MIT license and stay available under MIT.
 
 
 ### Desktop installation

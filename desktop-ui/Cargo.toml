@@ -2,7 +2,7 @@
 name = "psms-desktop"
 version = "0.1.24"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [dependencies]
 plist = "1.10.4"
