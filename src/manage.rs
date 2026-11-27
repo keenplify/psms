@@ -41,11 +41,27 @@ pub enum Action {
         #[command(subcommand)]
         command: Contact,
     },
+    /// Let your own devices queue texts over the local network or Tailscale with a send key.
+    Devices {
+        #[command(subcommand)]
+        command: Devices,
+    },
     /// Queue a text for your sending device (pSMS for Mac today) and check on it.
     Outbox {
         #[command(subcommand)]
         command: Outbox,
     },
+}
+#[derive(Subcommand)]
+pub enum Devices {
+    /// Turn on the device API. Create a key with `manage access create send`.
+    Enable {
+        #[arg(long, default_value_t = crate::device_api::DEFAULT_PORT, value_parser = clap::value_parser!(u16).range(1024..))]
+        port: u16,
+    },
+    Disable,
+    /// Show whether it is on and the URL to give your devices.
+    Status,
 }
 #[derive(Subcommand)]
 pub enum Outbox {
@@ -493,6 +509,29 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
             }
         },
         Action::Contact { command } => contact_command(path, opts, command).await?,
+        Action::Devices { command } => {
+            let db = Connection::open(storage::local_state(path))?;
+            match command {
+                Devices::Enable { port } => crate::device_api::enable(&db, port)?,
+                Devices::Disable => crate::device_api::disable(&db)?,
+                Devices::Status => {}
+            }
+            db.execute_batch(crate::device_api::SCHEMA)?;
+            let prefix = db
+                .query_row("SELECT prefix FROM tunnel_runtime WHERE id=1", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap_or_else(|_| opts.api_prefix.clone());
+            let port = crate::device_api::port(&db)?;
+            println!(
+                "{}",
+                json!({
+                    "enabled": port.is_some(),
+                    "url": port.map(|p| crate::device_api::url(p, &prefix)),
+                    "key": app_tokens::status(&db, "send")?,
+                })
+            );
+        }
         Action::Outbox { command } => {
             let reply = match command {
                 Outbox::Send { to, body } => {

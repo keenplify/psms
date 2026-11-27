@@ -54,6 +54,30 @@ with tempfile.TemporaryDirectory() as root:
   queued=tool(20,"send_message",{"to":"+15550100","body":"On my way"});assert queued["status"]=="queued"
   assert tool(21,"outbox_status",{"id":queued["id"]})["status"]=="queued"
   cliq=json.loads(manage("outbox","send","+15550101","See you"));assert json.loads(manage("outbox","status",cliq["id"]))["status"]=="queued"
+  # Devices-only send API: a send key from a private address queues texts, nothing else works.
+  import socket,time,urllib.request,urllib.error
+  sock=socket.socket();sock.bind(("127.0.0.1",0));port=sock.getsockname()[1];sock.close()
+  st=json.loads(manage("devices","enable","--port",str(port)));assert st["enabled"] and st["url"].endswith(f":{port}/v1/outbox") and st["key"] is None
+  key=manage("access","create","send").strip().splitlines()[-1].strip()
+  def dev(path,token,data=None):
+   req=urllib.request.Request(f"http://127.0.0.1:{port}/v1{path}",json.dumps(data).encode() if data else None,{"Content-Type":"application/json","Authorization":"Bearer "+token})
+   try:
+    with urllib.request.urlopen(req,timeout=5) as r:return r.status,json.loads(r.read() or "null")
+   except urllib.error.HTTPError as e:return e.code,None
+   except OSError:return 0,None
+  for _ in range(40):
+   if dev("/outbox","x"*64,{"to":"1","body":"x"})[0]:break
+   time.sleep(0.25)
+  owner=sqlite3.connect(db).execute("SELECT owner FROM local_credentials").fetchone()[0]
+  assert dev("/outbox",owner,{"to":"+15550100","body":"x"})[0]==401
+  s2,q=dev("/outbox",key,{"to":"+15550100","body":"From my laptop"});assert s2==202,s2
+  assert dev("/outbox/"+q["id"],key)[1]["status"]=="queued"
+  assert dev("/messages",key)[0]==404
+  manage("devices","disable")
+  for _ in range(40):
+   if dev("/outbox",key,{"to":"1","body":"x"})[0]==0:break
+   time.sleep(0.25)
+  else:raise AssertionError("device API still listening")
   p.stdin.close();p.wait(10);assert p.returncode==0
-  print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status, MCP writes and the outbox")
+  print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status, MCP writes, the outbox and the devices-only send API")
  finally:subprocess.run(cli+["stop"],check=True,stdout=subprocess.DEVNULL)

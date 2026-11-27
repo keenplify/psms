@@ -22,6 +22,7 @@ mod daemon;
 use clap::Parser;
 mod decrypt;
 mod desktop;
+mod device_api;
 mod encryption;
 mod hook_store;
 mod hostname_label;
@@ -404,6 +405,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )?;
     db.execute_batch(cards::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
+    db.execute_batch(device_api::SCHEMA)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS sync_interval(id INTEGER PRIMARY KEY CHECK(id=1),seconds INTEGER NOT NULL CHECK(seconds BETWEEN 1 AND 604800))")?;
     if remote.is_some() {
         db.execute_batch("CREATE TABLE IF NOT EXISTS external_hook_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_hook_cursor VALUES(1,0); CREATE TABLE IF NOT EXISTS external_sync_cursor(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL); INSERT OR IGNORE INTO external_sync_cursor VALUES(1,0);")?;
@@ -454,6 +456,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         providers: Arc::new(encryption::providers()?),
     };
     webhooks::start(archive.clone())?;
+    outbox::watch_devices(archive.clone(), prefix.clone());
     let sync_routes = sync::configure(&archive, &db_path)?;
     let monitor = archive.clone();
     let app = Router::new()

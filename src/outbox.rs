@@ -146,6 +146,76 @@ async fn result(
     }
 }
 
+/// Runs the device API while it is turned on, following the setting without a restart.
+pub fn watch_devices(archive: Archive, prefix: String) {
+    tokio::spawn(async move {
+        let mut running: Option<(u16, tokio::task::JoinHandle<()>)> = None;
+        let mut failed = None;
+        loop {
+            let wanted = archive.query(crate::device_api::port).await.ok().flatten();
+            if running.as_ref().map(|r| r.0) != wanted {
+                if let Some((_, task)) = running.take() {
+                    task.abort();
+                }
+                if let Some(port) = wanted.filter(|p| failed != Some(*p)) {
+                    match tokio::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+                        .await
+                    {
+                        Ok(listener) => {
+                            eprintln!("Device API listening on port {port}");
+                            failed = None;
+                            let app = device_routes(&prefix, archive.clone());
+                            running = Some((
+                                port,
+                                tokio::spawn(async move {
+                                    let _ = axum::serve(
+                                        listener,
+                                        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                                    )
+                                    .await;
+                                }),
+                            ));
+                        }
+                        Err(_) => {
+                            eprintln!("Device API could not use port {port}");
+                            failed = Some(port);
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    });
+}
+/// Private networks only, and only a send-scope key: this listener can queue texts and
+/// check on them, and nothing else.
+async fn devices_only(
+    State(archive): State<Archive>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !crate::device_api::private(peer.ip()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !archive.app_token(request.headers(), "send") {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    next.run(request).await
+}
+fn device_routes(prefix: &str, archive: Archive) -> Router {
+    Router::new()
+        .route(&format!("{prefix}/outbox"), post(queue))
+        .route(&format!("{prefix}/outbox/{{id}}"), get(status))
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
+        .layer(axum::middleware::from_fn_with_state(
+            archive.clone(),
+            devices_only,
+        ))
+        .with_state(archive)
+}
+
 pub fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
     Router::new()
         .route(&format!("{prefix}/outbox"), post(queue))
