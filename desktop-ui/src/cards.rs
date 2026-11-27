@@ -31,7 +31,7 @@ pub struct Entry {
     pub image: Option<Arc<Image>>,
 }
 
-fn open(key: &str, envelope: &str) -> Option<Value> {
+pub fn open(key: &str, envelope: &str) -> Option<Value> {
     let bytes = STANDARD.decode(envelope).ok()?;
     if bytes.len() <= 28 {
         return None;

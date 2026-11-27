@@ -7,6 +7,8 @@ mod app_tokens;
 mod archive;
 mod cards;
 mod connect;
+#[path = "../../src/device_api.rs"]
+mod device_api;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
 mod hosted_login;
@@ -16,6 +18,7 @@ mod kit;
 mod onboard;
 #[path = "../../src/recovery.rs"]
 mod recovery;
+mod relay;
 mod replies;
 mod setup;
 use archive::Thread;
@@ -67,6 +70,12 @@ struct Dashboard {
     endpoint: Entity<InputState>,
     form: connect::Form,
     delivery_url: Entity<InputState>,
+    /// Reply from anywhere: recovery words, a self-hosted URL and its token.
+    relay_words: Entity<InputState>,
+    relay_url: Entity<InputState>,
+    relay_token: Entity<InputState>,
+    relay_kit: Option<String>,
+    relay_busy: bool,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -1540,6 +1549,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // if storage selection was interrupted, including setups from older releases.
     let step = if step == 1 { 0 } else { step };
     let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+    if !settings {
+        relay::start(settings_path.clone());
+    }
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
@@ -1603,6 +1615,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputState::new(window, cx).placeholder("https://example.com/webhook")
                     });
                     let hook_token = cx.new(|cx| InputState::new(window, cx).masked(true));
+                    let relay_words = cx.new(|cx| {
+                        InputState::new(window, cx).masked(true).placeholder("Your 12 recovery words")
+                    });
+                    let relay_url = cx.new(|cx| {
+                        InputState::new(window, cx).placeholder("https://your-tunnel.example.com/v1")
+                    });
+                    let relay_token = cx.new(|cx| {
+                        InputState::new(window, cx).masked(true).placeholder("Owner or API token")
+                    });
                     cx.new(|cx: &mut Context<Dashboard>| {
                         // Inputs only redraw when their owner does, so re-render on every edit.
                         for field in [&search, &reply].into_iter().chain(card_fields.iter()) {
@@ -1702,6 +1723,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             hook_url,
                             hook_token,
                             delivery_url,
+                            relay_words,
+                            relay_url,
+                            relay_token,
+                            relay_kit: None,
+                            relay_busy: false,
                             expiry: Some(30),
                             session_key: None,
                             unlock_box: false,
