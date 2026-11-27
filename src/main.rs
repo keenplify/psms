@@ -26,6 +26,7 @@ mod encryption;
 mod hook_store;
 mod hostname_label;
 mod inbox;
+mod kit;
 mod manage;
 mod managed_tunnel;
 mod mcp;
@@ -394,6 +395,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         CREATE TABLE IF NOT EXISTS message_flags (
             message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
             starred INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS message_reads (
+            message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+            read_at INTEGER NOT NULL DEFAULT (unixepoch())
         )",
     )?;
     db.execute_batch(cards::SCHEMA)?;

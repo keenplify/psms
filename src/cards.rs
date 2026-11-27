@@ -13,6 +13,76 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 
+/// Opens a sealed card with the archive key.
+pub fn open(key: &str, envelope: &str) -> Option<Value> {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let bytes = STANDARD.decode(envelope).ok()?;
+    if bytes.len() <= 28 {
+        return None;
+    }
+    let clear = Aes256Gcm::new_from_slice(key.as_bytes())
+        .ok()?
+        .decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
+        .ok()?;
+    serde_json::from_slice(&clear).ok()
+}
+/// Seals a card with the archive key, in the same envelope as messages.
+pub fn seal(key: &str, card: &Value) -> Option<String> {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).ok()?;
+    let sealed = Aes256Gcm::new_from_slice(key.as_bytes())
+        .ok()?
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            serde_json::to_vec(card).ok()?.as_slice(),
+        )
+        .ok()?;
+    Some(STANDARD.encode([nonce.as_slice(), &sealed].concat()))
+}
+/// Labelled entries from `[{"label","value"}]`, plain strings, or the shortcut's one-per-line text.
+pub fn labeled(value: &Value, fallback: &str) -> Vec<Value> {
+    let entry = |label: &str, value: &str| json!({"label": if label.trim().is_empty() { fallback } else { label.trim() }, "value": value.trim()});
+    let items: Vec<Value> = match value {
+        Value::String(s) => s.lines().map(|l| entry(fallback, l)).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(entry(fallback, s)),
+                Value::Object(_) => Some(entry(
+                    v["label"].as_str().unwrap_or(fallback),
+                    v["value"].as_str().unwrap_or_default(),
+                )),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    items.into_iter().filter(|v| v["value"] != "").collect()
+}
+/// A readable card for CLI and MCP output. The photo is reported, not included.
+pub fn summary(card: &Value) -> Value {
+    let text = |f: &str| card[f].as_str().unwrap_or_default().trim().to_string();
+    json!({
+        "name": text("fn"), "org": text("org"), "title": text("title"),
+        "phones": labeled(&card["tel"], "mobile"), "emails": labeled(&card["email"], "email"),
+        "note": text("note"),
+        "has_photo": card["photo"]["data"].as_str().is_some_and(|d| !d.is_empty()),
+    })
+}
+/// The manual copy wins over the phone's.
+pub fn merged(key: &str, row: &Value) -> Option<(Value, &'static str)> {
+    let manual = row["manual_card"].as_str().and_then(|e| open(key, e));
+    let phone = row["phone_card"].as_str().and_then(|e| open(key, e));
+    match (manual, phone) {
+        (Some(m), _) => Some((m, "edited")),
+        (None, Some(p)) => Some((p, "phone")),
+        _ => None,
+    }
+}
+
 pub const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS contact_cards(
     contact_id TEXT PRIMARY KEY NOT NULL CHECK(length(contact_id)=64),
     phone_card TEXT, phone_updated_at INTEGER,

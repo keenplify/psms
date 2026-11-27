@@ -73,6 +73,10 @@ pub(super) fn routes(prefix: &str, archive: Archive) -> Router<Archive> {
     Router::new()
         .route(&format!("{prefix}/messages"), get(list))
         .route(
+            &format!("{prefix}/messages/read"),
+            axum::routing::post(mark_read),
+        )
+        .route(
             &format!("{prefix}/messages/{{id}}"),
             get(detail).patch(update).delete(remove),
         )
@@ -100,8 +104,11 @@ pub(crate) struct Entry {
     body: String,
     archived_at: i64,
     starred: bool,
+    /// Read on any inbox. External storage engines don't track this yet.
+    #[serde(default)]
+    read: bool,
 }
-pub(crate) const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
+pub(crate) const SELECT: &str = "SELECT m.id, m.sender, m.body, m.archived_at, COALESCE(n.starred, 0), m.rowid, EXISTS(SELECT 1 FROM message_reads r WHERE r.message_id=m.id) FROM messages m LEFT JOIN message_flags n ON n.message_id=m.id";
 pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     Ok(Entry {
         id: row.get(0)?,
@@ -109,6 +116,7 @@ pub(crate) fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
         body: row.get(2)?,
         archived_at: row.get(3)?,
         starred: row.get(4)?,
+        read: row.get(6)?,
     })
 }
 #[derive(Deserialize)]
@@ -186,23 +194,75 @@ async fn detail(State(archive): State<Archive>, Path(id): Path<Uuid>) -> ApiResu
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Edit {
-    starred: bool,
+    starred: Option<bool>,
+    read: Option<bool>,
 }
 async fn update(
     State(archive): State<Archive>,
     Path(id): Path<Uuid>,
     Json(edit): Json<Edit>,
 ) -> ApiResult<StatusCode> {
+    if edit.starred.is_none() && edit.read.is_none() {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
     if let Some(remote) = &archive.remote {
+        if edit.read.is_some() {
+            return Err(StatusCode::NOT_IMPLEMENTED);
+        }
         return found(usize::from(
             remote
-                .edit(&id.to_string(), Some(edit.starred))
+                .edit(&id.to_string(), edit.starred)
                 .await
                 .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
         ));
     }
-    let changed=archive.query(move |db| db.execute("INSERT INTO message_flags(message_id,starred) SELECT id,?2 FROM messages WHERE id=?1 ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",params![id.to_string(),edit.starred])).await?;
+    let changed = archive
+        .query(move |db| {
+            let id = id.to_string();
+            let mut changed = db.query_row("SELECT count(*) FROM messages WHERE id=?1", [&id], |r| r.get::<_, i64>(0))? as usize;
+            if let Some(starred) = edit.starred {
+                changed = db.execute("INSERT INTO message_flags(message_id,starred) SELECT id,?2 FROM messages WHERE id=?1 ON CONFLICT(message_id) DO UPDATE SET starred=excluded.starred",params![id,starred])?;
+            }
+            match edit.read {
+                Some(true) => {
+                    db.execute("INSERT OR IGNORE INTO message_reads(message_id) SELECT id FROM messages WHERE id=?1", [&id])?;
+                }
+                Some(false) => {
+                    db.execute("DELETE FROM message_reads WHERE message_id=?1", [&id])?;
+                }
+                None => {}
+            }
+            Ok(changed)
+        })
+        .await?;
     found(changed)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadIds {
+    ids: Vec<Uuid>,
+}
+/// Marks several messages read at once, matching the hosted API.
+async fn mark_read(
+    State(archive): State<Archive>,
+    Json(read): Json<ReadIds>,
+) -> ApiResult<StatusCode> {
+    if read.ids.is_empty() || read.ids.len() > 500 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if archive.remote.is_some() {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
+    archive
+        .query(move |db| {
+            let mut stmt = db.prepare("INSERT OR IGNORE INTO message_reads(message_id) SELECT id FROM messages WHERE id=?1")?;
+            for id in &read.ids {
+                stmt.execute([id.to_string()])?;
+            }
+            Ok(())
+        })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 async fn remove(State(archive): State<Archive>, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
     if let Some(remote) = &archive.remote {

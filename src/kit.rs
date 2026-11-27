@@ -95,6 +95,18 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// Reads an archive key from a key file: the 12 words, the original key, or a recovery kit PDF.
+#[allow(dead_code)]
+pub fn key_from_file(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    if bytes.starts_with(b"%PDF") {
+        return Ok(key_from_kit(&bytes)?);
+    }
+    let text =
+        String::from_utf8(bytes).map_err(|_| "the key file is not text or a recovery kit PDF")?;
+    Ok(crate::recovery::key_from_backup(text.trim())?)
+}
+
 pub fn key_from_kit(pdf: &[u8]) -> Result<String, &'static str> {
     let mut words: [Option<String>; 12] = Default::default();
     let mut texts = Vec::new();
@@ -170,5 +182,14 @@ mod tests {
         assert_eq!(key_from_kit(&pdf).unwrap(), key);
 
         assert!(key_from_kit(b"%PDF-1.7 nothing here").is_err());
+
+        // Key files accept the kit PDF as well as typed words.
+        let dir = std::env::temp_dir().join(format!("psms-kit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kit.pdf"), &app).unwrap();
+        std::fs::write(dir.join("words.txt"), format!("{words}\n")).unwrap();
+        assert_eq!(key_from_file(&dir.join("kit.pdf")).unwrap(), key);
+        assert_eq!(key_from_file(&dir.join("words.txt")).unwrap(), key);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

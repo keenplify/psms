@@ -9,6 +9,7 @@ mod connect;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
 mod hosted_login;
+#[path = "../../src/kit.rs"]
 mod kit;
 #[path = "../../src/onboard.rs"]
 mod onboard;
@@ -233,8 +234,34 @@ impl Dashboard {
                     (Some(key), false) => cards::load(&self.db, key),
                     _ => Default::default(),
                 };
+                self.mark_selected_read();
             }
             Err(_) => self.notice = "Could not read this archive. Refresh to try again.".into(),
+        }
+    }
+    /// The open conversation counts as read once its messages can be read.
+    fn mark_selected_read(&mut self) {
+        if self.external || self.session_key.is_none() || self.screen != Screen::Inbox {
+            return;
+        }
+        let Some(thread) = self
+            .threads
+            .iter_mut()
+            .find(|t| Some(&t.key) == self.selected.as_ref())
+        else {
+            return;
+        };
+        for mail in thread.items.iter_mut().filter(|m| !m.read && !m.locked) {
+            if self
+                .db
+                .execute(
+                    "INSERT OR IGNORE INTO message_reads(message_id) VALUES(?1)",
+                    [&mail.id],
+                )
+                .is_ok()
+            {
+                mail.read = true;
+            }
         }
     }
     fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
@@ -288,13 +315,15 @@ impl Dashboard {
                 "Unlock to read".into()
             } else {
                 m.text
-                    .lines()
-                    .next()
-                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
                     .chars()
-                    .take(70)
+                    .take(120)
                     .collect()
             };
+            let unread = t.items.iter().any(|m| !m.read && !m.locked);
+            let when = m.when.clone();
             let key = t.key.clone();
             let entry = t.contact.as_ref().and_then(|c| self.cards.get(c));
             let name = entry
@@ -306,17 +335,30 @@ impl Dashboard {
                     .id(("conversation", i))
                     .h_flex()
                     .items_center()
-                    .gap_3()
-                    .px_3()
+                    .gap_2()
+                    .pl_1()
+                    .pr_3()
                     .py_2()
                     .rounded_lg()
                     .cursor_pointer()
-                    .bg(self.color(if selected { BLUE } else { 0xf1f3f6 }))
+                    .bg(if selected {
+                        rgb(0x0a7cff)
+                    } else {
+                        self.color(0xf1f3f6)
+                    })
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.selected = Some(key.clone());
                         s.show(Screen::Inbox, cx)
                     }))
-                    .child(self.avatar(entry, initials, 36., selected))
+                    .child(
+                        // Unread conversations get a blue dot, as in Messages.
+                        div()
+                            .flex_shrink_0()
+                            .size(px(8.))
+                            .rounded_full()
+                            .when(unread && !selected, |d| d.bg(rgb(0x0a7cff))),
+                    )
+                    .child(self.avatar(entry, initials, 40., selected))
                     .child(
                         div()
                             .v_flex()
@@ -324,15 +366,37 @@ impl Dashboard {
                             .flex_1()
                             .child(
                                 div()
-                                    .truncate()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(self.color(if selected { 0xfffffe } else { INK }))
-                                    .child(name),
+                                    .h_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(self.color(if selected {
+                                                0xfffffe
+                                            } else {
+                                                INK
+                                            }))
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_xs()
+                                            .text_color(self.color(if selected {
+                                                0xe6efff
+                                            } else {
+                                                MUTED
+                                            }))
+                                            .child(when),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .truncate()
                                     .text_sm()
+                                    .line_clamp(2)
                                     .text_color(self.color(if selected { 0xe6efff } else { MUTED }))
                                     .child(preview),
                             ),
@@ -1185,6 +1249,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let db = Connection::open_with_flags(&settings_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS desktop_preferences(id INTEGER PRIMARY KEY,starred_only INTEGER NOT NULL)")?;
+    // The service creates this too; an older service may not have yet.
+    if !external {
+        db.execute_batch("CREATE TABLE IF NOT EXISTS message_reads(message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE, read_at INTEGER NOT NULL DEFAULT (unixepoch()))")?;
+    }
     let only_starred = db.query_row(
         "SELECT coalesce((SELECT starred_only FROM desktop_preferences WHERE id=1),0)",
         [],
@@ -1320,8 +1388,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         if let Some(v)=result.and_then(|v| {
                                             let mut records=Vec::new();
                                             for r in v["messages"].as_array()? {
-                                                let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get(0)).ok()?;
-                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time,r["starred"].as_i64()==Some(1),None));
+                                                let time=s.db.query_row("SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime')",[r["archived_at"].as_i64()?],|r|r.get::<_,String>(0)).ok()?;
+                                                records.push((r["id"].as_str()?.into(),r["sender"].as_str()?.into(),r["body"].as_str()?.into(),time.clone(),r["starred"].as_i64()==Some(1),None,true,time));
                                             }
                                             Some((records,v["newest"].as_i64()?))
                                         }) {s.external_page=Some((page,starred,v.0));s.external_newest=v.1;} else {s.external_page=None;s.notice="Could not reach the selected database.".into();}

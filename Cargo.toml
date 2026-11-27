@@ -14,6 +14,7 @@ ring = "0.17"
 semver = "1"
 tempfile = "3"
 aes-gcm = "0.10"
+flate2 = "1.1.11"
 rmcp = { version = "3.11", features = ["transport-io"] }
 url = "2"
 axum = "0.8.9"

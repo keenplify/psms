@@ -13,6 +13,16 @@ with tempfile.TemporaryDirectory() as root:
    d.execute("INSERT INTO contacts(id) VALUES(?)",(cid,))
    d.execute("INSERT INTO message_contacts VALUES(?,?)",(mid,cid))
   d.close()
+  seal=lambda obj:subprocess.check_output(["node","-e","const c=require('crypto'),iv=c.randomBytes(12),s=c.createCipheriv('aes-256-gcm',Buffer.from('a'.repeat(32)),iv);process.stdout.write(Buffer.concat([iv,s.update(process.argv[1]),s.final(),s.getAuthTag()]).toString('base64'))",json.dumps(obj)],text=True)
+  with sqlite3.connect(db) as d:d.execute("INSERT INTO contact_cards(contact_id,phone_card,phone_updated_at) VALUES(?,?,unixepoch())",(cid,seal({"fn":"Mika Santos","tel":"+15550100\n+15550101","email":["mika@example.com"]})))
+  d.close()
+  manage=lambda *a:subprocess.check_output(cli+["manage",*a],text=True)
+  listed=json.loads(manage("contact","list","--key-file",str(kf)))["contacts"]
+  assert listed[0]["card"]["name"]=="Mika Santos" and listed[0]["source"]=="phone" and [x["value"] for x in listed[0]["card"]["phones"]]==["+15550100","+15550101"]
+  edited=json.loads(manage("contact","set","Mika","--key-file",str(kf),"--name","Mika S.","--phone","home=+1 555 0100","--phone","Kylla's office=+63 992 037 1891"))
+  assert edited["id"]==cid and edited["card"]["phones"][1]=={"label":"Kylla's office","value":"+63 992 037 1891"} and edited["card"]["emails"][0]["value"]=="mika@example.com"
+  assert json.loads(manage("contact","show",cid,"--key-file",str(kf)))["source"]=="edited"
+  unread=json.loads(manage("inbox","list","--unread"))["messages"];assert [m["id"] for m in unread]==[mid] and unread[0]["read"] is False
   p=subprocess.Popen(cli+["mcp","--key-file",str(kf)],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
   def call(msg):
    p.stdin.write(json.dumps(dict(jsonrpc="2.0",**msg))+"\n");p.stdin.flush()
@@ -27,6 +37,13 @@ with tempfile.TemporaryDirectory() as root:
   assert tool(4,"search_messages",{"text":"wrong"})["messages"]==[]
   assert tool(5,"get_message",{"id":mid})["text"]=="Saturday at noon"
   assert tool(6,"contact_history",{"sender":"Mika"})["messages"][0]["text"]=="Saturday at noon"
+  assert tool(7,"get_message",{"id":mid})["contact"]["name"]=="Mika S."
+  assert tool(8,"list_contacts",{})["contacts"][0]["card"]["phones"][0]=={"label":"home","value":"+1 555 0100"}
+  assert [m["id"] for m in tool(9,"search_messages",{"unread":True})["messages"]]==[mid]
+  manage("inbox","read",mid)
+  assert tool(10,"search_messages",{"unread":True})["messages"]==[] and tool(11,"get_message",{"id":mid})["read"] is True
+  manage("contact","reset","Mika","--key-file",str(kf))
+  assert tool(12,"get_message",{"id":mid})["contact"]["name"]=="Mika Santos"
   p.stdin.close();p.wait(10);assert p.returncode==0
-  print("PASS stdio MCP: negotiated, listed four tools, searched by local sender/text/star and read message by UUID")
+  print("PASS stdio MCP and CLI: tools, local search, contact cards with labelled phones, edits and reset, read status")
  finally:subprocess.run(cli+["stop"],check=True,stdout=subprocess.DEVNULL)

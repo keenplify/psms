@@ -1,4 +1,4 @@
-use crate::{app_tokens, cli::ServerOptions, daemon, decrypt, hook_store, storage};
+use crate::{app_tokens, cards, cli::ServerOptions, daemon, decrypt, hook_store, storage};
 use clap::{Subcommand, ValueEnum};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde_json::{Value, json};
@@ -31,10 +31,56 @@ pub enum Action {
         #[arg(value_enum)]
         theme: Theme,
     },
-    /// Page through the inbox, decrypt locally, or star an archived message.
+    /// Page through the inbox, decrypt locally, star or mark messages read.
     Inbox {
         #[command(subcommand)]
         command: Inbox,
+    },
+    /// Show and edit contact names, phone numbers and emails, sealed with the archive key.
+    Contact {
+        #[command(subcommand)]
+        command: Contact,
+    },
+}
+#[derive(Subcommand)]
+pub enum Contact {
+    /// List contacts with their names. Needs the archive key to open cards.
+    List {
+        /// The 12 words, the original key, or the recovery kit PDF.
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Show one contact by contact ID or exact sender.
+    Show {
+        /// A contact ID, or the sender's exact number or ID.
+        contact: String,
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Edit a contact. Given fields replace the current ones; phones and emails take label=value.
+    Set {
+        contact: String,
+        #[arg(long)]
+        key_file: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        org: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// Repeat for several numbers, for example --phone "mobile=+1 555 0100".
+        #[arg(long = "phone")]
+        phones: Vec<String>,
+        #[arg(long = "email")]
+        emails: Vec<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Drop your edits and show the phone's copy again.
+    Reset {
+        contact: String,
+        #[arg(long)]
+        key_file: PathBuf,
     },
 }
 #[derive(Clone, Copy, ValueEnum)]
@@ -91,6 +137,9 @@ pub enum Inbox {
         limit: u32,
         #[arg(long)]
         starred: bool,
+        /// Only messages not yet read on any inbox.
+        #[arg(long)]
+        unread: bool,
         #[arg(long)]
         search: Option<String>,
         #[arg(long)]
@@ -107,12 +156,39 @@ pub enum Inbox {
     Unstar {
         id: Uuid,
     },
+    Read {
+        id: Uuid,
+    },
+    Unread {
+        id: Uuid,
+    },
 }
 async fn api(
     path: &Path,
     options: &ServerOptions,
     route: &str,
     edit: Option<bool>,
+) -> Result<Value> {
+    match edit {
+        Some(flag) => {
+            call(
+                path,
+                options,
+                reqwest::Method::PATCH,
+                route,
+                Some(json!({"starred": flag})),
+            )
+            .await
+        }
+        None => call(path, options, reqwest::Method::GET, route, None).await,
+    }
+}
+async fn call(
+    path: &Path,
+    options: &ServerOptions,
+    method: reqwest::Method,
+    route: &str,
+    body: Option<Value>,
 ) -> Result<Value> {
     let addr = daemon::running_address(path)?.ok_or("Start the daemon with psms init first.")?;
     let db =
@@ -135,16 +211,143 @@ async fn api(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let url = format!("http://{addr}{prefix}{route}");
-    let req = match edit {
-        Some(flag) => http.patch(url).json(&json!({"starred":flag})),
-        None => http.get(url),
-    };
-    let res = req.bearer_auth(token).send().await?.error_for_status()?;
-    if edit.is_some() {
-        Ok(Value::Null)
-    } else {
-        Ok(res.json().await?)
+    let mut req = http.request(method, url);
+    if let Some(body) = body {
+        req = req.json(&body);
     }
+    let res = req.bearer_auth(token).send().await?.error_for_status()?;
+    let text = res.text().await?;
+    Ok(if text.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&text)?
+    })
+}
+/// Resolves a contact ID or an exact sender to the contact ID used by the archive.
+fn contact_of(value: &str, key: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    if lower.len() == 64 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+        lower
+    } else {
+        crate::contact_id(value, key)
+    }
+}
+fn label_value(raw: &str, fallback: &str) -> Value {
+    match raw.split_once('=') {
+        Some((label, value)) if !label.trim().is_empty() => {
+            json!({"label": label.trim(), "value": value.trim()})
+        }
+        _ => json!({"label": fallback, "value": raw.trim()}),
+    }
+}
+async fn contact_command(path: &Path, opts: &ServerOptions, command: Contact) -> Result<()> {
+    let key_of = |file: &Path| crate::kit::key_from_file(file);
+    let cards = |key: String| async move {
+        let rows = call(path, opts, reqwest::Method::GET, "/contacts/cards", None).await?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows["cards"].as_array().cloned().unwrap_or_default() {
+            if let (Some(id), Some(card)) = (row["contact_id"].as_str(), cards::merged(&key, &row))
+            {
+                out.insert(id.to_string(), card);
+            }
+        }
+        Ok::<_, Box<dyn std::error::Error>>(out)
+    };
+    match command {
+        Contact::List { key_file } => {
+            let key = key_of(&key_file)?;
+            let cards = cards(key).await?;
+            let page = call(
+                path,
+                opts,
+                reqwest::Method::GET,
+                "/contacts?limit=100",
+                None,
+            )
+            .await?;
+            let mut out = Vec::new();
+            for c in page["contacts"].as_array().cloned().unwrap_or_default() {
+                let id = c["id"].as_str().unwrap_or_default().to_string();
+                let card = cards.get(&id);
+                out.push(json!({
+                    "id": id,
+                    "last_seen_at": c["last_seen_at"],
+                    "card": card.map(|(v, _)| cards::summary(v)),
+                    "source": card.map(|(_, s)| *s),
+                }));
+            }
+            println!("{}", json!({"contacts": out}));
+        }
+        Contact::Show { contact, key_file } => {
+            let key = key_of(&key_file)?;
+            let id = contact_of(&contact, &key);
+            let cards = cards(key).await?;
+            let card = cards.get(&id);
+            println!(
+                "{}",
+                json!({"id": id, "card": card.map(|(v, _)| cards::summary(v)), "source": card.map(|(_, s)| *s)})
+            );
+        }
+        Contact::Set {
+            contact,
+            key_file,
+            name,
+            org,
+            title,
+            phones,
+            emails,
+            note,
+        } => {
+            let key = key_of(&key_file)?;
+            let id = contact_of(&contact, &key);
+            let mut card = cards(key.clone())
+                .await?
+                .remove(&id)
+                .map(|(v, _)| v)
+                .unwrap_or_else(|| json!({}));
+            card["version"] = json!(1);
+            for (field, value) in [("fn", name), ("org", org), ("title", title), ("note", note)] {
+                if let Some(v) = value {
+                    card[field] = json!(v);
+                }
+            }
+            if !phones.is_empty() {
+                card["tel"] =
+                    Value::Array(phones.iter().map(|p| label_value(p, "mobile")).collect());
+            } else {
+                card["tel"] = Value::Array(cards::labeled(&card["tel"], "mobile"));
+            }
+            if !emails.is_empty() {
+                card["email"] =
+                    Value::Array(emails.iter().map(|e| label_value(e, "email")).collect());
+            } else {
+                card["email"] = Value::Array(cards::labeled(&card["email"], "email"));
+            }
+            let envelope = cards::seal(&key, &card).ok_or("could not seal the card")?;
+            call(
+                path,
+                opts,
+                reqwest::Method::PUT,
+                &format!("/contacts/{id}/card"),
+                Some(json!({"envelope": envelope})),
+            )
+            .await?;
+            println!("{}", json!({"id": id, "card": cards::summary(&card)}));
+        }
+        Contact::Reset { contact, key_file } => {
+            let key = key_of(&key_file)?;
+            let id = contact_of(&contact, &key);
+            call(
+                path,
+                opts,
+                reqwest::Method::PUT,
+                &format!("/contacts/{id}/card"),
+                Some(json!({"envelope": null})),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 pub async fn newest(path: &Path, opts: &ServerOptions) -> Result<Option<String>> {
     Ok(
@@ -234,10 +437,8 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
             Inbox::Show { id, key_file } => {
                 let mut entry = api(path, opts, &format!("/messages/{id}"), None).await?;
                 let k = key_file
-                    .map(std::fs::read_to_string)
-                    .transpose()?
                     .as_deref()
-                    .map(crate::recovery::key_from_backup)
+                    .map(crate::kit::key_from_file)
                     .transpose()?;
                 unlock(&mut entry, k.as_deref().map(str::trim_end));
                 println!("{entry}");
@@ -245,6 +446,7 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
             Inbox::List {
                 cursor,
                 starred,
+                unread,
                 limit,
                 search,
                 key_file,
@@ -255,10 +457,8 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                 }
                 let mut page = api(path, opts, &route, None).await?;
                 let k = key_file
-                    .map(std::fs::read_to_string)
-                    .transpose()?
                     .as_deref()
-                    .map(crate::recovery::key_from_backup)
+                    .map(crate::kit::key_from_file)
                     .transpose()?;
                 let needle = search.map(|n| n.to_lowercase());
                 let rows = page["messages"]
@@ -269,6 +469,7 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                 }
                 rows.retain(|r| {
                     (!starred || r["starred"] == true)
+                        && (!unread || r["read"] != true)
                         && needle.as_ref().is_none_or(|n| {
                             ["sender", "body"].iter().any(|f| {
                                 r[*f].as_str().is_some_and(|v| v.to_lowercase().contains(n))
@@ -278,14 +479,24 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                 println!("{page}");
             }
             other => {
-                let (id, flag) = match other {
-                    Inbox::Star { id } => (id, true),
-                    Inbox::Unstar { id } => (id, false),
+                let (id, body) = match other {
+                    Inbox::Star { id } => (id, json!({"starred": true})),
+                    Inbox::Unstar { id } => (id, json!({"starred": false})),
+                    Inbox::Read { id } => (id, json!({"read": true})),
+                    Inbox::Unread { id } => (id, json!({"read": false})),
                     _ => unreachable!(),
                 };
-                api(path, opts, &format!("/messages/{id}"), Some(flag)).await?;
+                call(
+                    path,
+                    opts,
+                    reqwest::Method::PATCH,
+                    &format!("/messages/{id}"),
+                    Some(body),
+                )
+                .await?;
             }
         },
+        Action::Contact { command } => contact_command(path, opts, command).await?,
     }
     Ok(())
 }
