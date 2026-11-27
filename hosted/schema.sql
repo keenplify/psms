@@ -19,6 +19,8 @@ CREATE INDEX IF NOT EXISTS archive_order ON archived_messages(account_id,receive
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS sg_subject text;
 -- Set when a phone opens its pairing page, so the inbox can move on.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS seen_at timestamptz;
+-- Set on a phone token's first stored message, so its setup page can confirm it worked.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS used_at timestamptz;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_sg_subject ON accounts(sg_subject);

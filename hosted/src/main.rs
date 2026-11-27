@@ -126,7 +126,8 @@ async fn pair(State(a): State<App>, h: HeaderMap) -> Reply {
     .map_err(|_| DOWN)?;
     Ok(Json(json!({"token":token})))
 }
-// The phone's pairing page marks its upload token as opened; the inbox polls the same token.
+// The phone's pairing page marks its upload token as opened; the inbox and that page poll the
+// same token to see whether it opened the page and stored its first message.
 async fn mark_seen(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failure> {
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let updated = db
@@ -146,13 +147,15 @@ async fn seen(State(a): State<App>, h: HeaderMap) -> Reply {
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let row = db
         .query_opt(
-            "SELECT seen_at IS NOT NULL FROM sessions WHERE digest=$1 AND scope='upload' AND expires_at>now()",
+            "SELECT seen_at IS NOT NULL, used_at IS NOT NULL FROM sessions WHERE digest=$1 AND scope='upload' AND expires_at>now()",
             &[&bearer(&h)?],
         )
         .await
         .map_err(|_| DOWN)?
         .ok_or(DENIED)?;
-    Ok(Json(json!({"opened": row.get::<_, bool>(0)})))
+    Ok(Json(
+        json!({"opened": row.get::<_, bool>(0), "used": row.get::<_, bool>(1)}),
+    ))
 }
 async fn store(
     State(a): State<App>,
@@ -186,6 +189,12 @@ async fn store(
         return Err(StatusCode::INSUFFICIENT_STORAGE);
     }
     tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
+    tx.execute(
+        "UPDATE sessions SET used_at=now() WHERE digest=$1 AND used_at IS NULL",
+        &[&bearer(&h)?],
+    )
+    .await
+    .map_err(|_| DOWN)?;
     tx.execute("SELECT pg_notify('psms_arrival', $1)", &[&user.to_string()])
         .await
         .map_err(|_| DOWN)?;
