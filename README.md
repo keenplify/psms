@@ -175,13 +175,9 @@ The CLI prints newly issued credentials once. The GUI copies the raw token and d
 
 ## Hosted accounts
 
-Sign in at [Papamo accounts](https://www.papamo.dev/login) with an existing 1.6 Competitive account, Google or Discord. The Singapore identity service verifies the account. Selecting pSMS creates a product membership keyed to its stable Singapore account ID. A free archive holds up to 1,000 encrypted messages. Accounts with the 1.6 Competitive system_admin role have unlimited message storage. The account page shows the current allowance.
+Don't want to run a server? Sign in at [papamo.dev](https://www.papamo.dev/sms) with a Papamo account (a 1.6 Competitive account, Google or Discord) and pSMS keeps your archive for you. Messages stay end-to-end encrypted: papamo.dev stores only sealed envelopes it can't open. The free plan keeps your latest 100 messages; see [plans](https://www.papamo.dev/docs/sms/plans) for more.
 
-The regional Rust services use Chicago as the PostgreSQL write primary. Singapore runs an asynchronous read-only standby. A regional service connects over an SSH tunnel using its own database role. Promotion is manual: fence the old primary before promoting the standby and repointing writers. A replica also replays deletions, so it does not replace independent backups.
-
-Operators with the provisioned SSH aliases can deploy from a Mac or Linux checkout without GitHub Actions. Install zig, `cargo-zigbuild` and the `x86_64-unknown-linux-gnu` Rust target, then run `scripts/deploy-local.sh`. It runs the checks, cross-builds `psms` and `psms-hosted`, and rolls both out with `scripts/update-hosted.py`. Pass `--regions na` to stage one region first. On Linux, `python scripts/update-hosted.py hosted/target/release/psms-hosted --publish` still deploys a natively built hosted binary. The script applies the schema in Chicago, verifies the binary checksum per host, restarts each regional service, and checks readiness. Run `hosted/deploy/smoke.py` on Chicago as the operator to verify isolation and the concurrent quota boundary.
-
-Singapore checks the authoritative system_admin assignments every minute and replaces a short-lived role snapshot in Chicago. Promotion and demotion apply to existing upload tokens. If sync stops for five minutes, ordinary limits resume until the next successful refresh. Demotion preserves every message and pauses new uploads while the archive is at or above the free limit. List large archives with GET /free/v1/messages?limit=100&offset=0 and pass the returned next_offset until it is null. Operators can trigger an immediate refresh with systemctl start psms-admin-sync on Singapore.
+The hosted service runs the code in `hosted/`, so you can read exactly what it stores.
 
 ## Software updates
 
@@ -189,4 +185,4 @@ The desktop checks GitHub Releases at startup and hourly while open. Settings â†
 
 Updates are per OS user and platform. The original launcher selects the active version from the user's local pSMS data directory. It switches versions only after both binaries match the Ed25519-signed manifest. An elevated process uses the installed system version. The updater keeps the archive and credentials in their existing locations.
 
-Publishing a stable version tag matching Cargo.toml builds the release, signs the asset digests, and starts the regional rollout in Chicago, Singapore, Warsaw, then South America. Each server retrieves and verifies the signed schema and binaries. Chicago applies the compatible database migration. A failed local health check restores the previous binaries and stops the rollout. A public health-check failure stops further regions. The release-only SSH account can run the fixed update command. The signing key, rollout key, and pinned SSH host keys are configured in GitHub Actions secrets.
+Publishing a stable version tag matching Cargo.toml builds the release and signs the asset digests. Installed copies pick it up at their next update check.
