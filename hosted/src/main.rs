@@ -330,9 +330,9 @@ async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> R
     let offset = i64::from(page.offset.unwrap_or(0));
     let user = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint,read_at IS NOT NULL FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
+    let rows=db.query("SELECT id,sender,body,contact_id,extract(epoch from received_at)::bigint,read_at IS NOT NULL,starred FROM archived_messages WHERE account_id=$1 ORDER BY received_at DESC,id LIMIT $2 OFFSET $3",&[&user,&(limit+1),&offset]).await.map_err(|_|DOWN)?;
     Ok(Json(
-        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4),"read":r.get::<_,bool>(5)})).collect::<Vec<_>>()}),
+        json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":rows.iter().take(limit as usize).map(|r|json!({"id":r.get::<_,String>(0),"sender":r.get::<_,String>(1),"body":r.get::<_,String>(2),"contact_id":r.get::<_,Option<String>>(3),"received_at":r.get::<_,i64>(4),"read":r.get::<_,bool>(5),"starred":r.get::<_,bool>(6)})).collect::<Vec<_>>()}),
     ))
 }
 // Phone upload tokens for Settings. A token is identified by the start of its digest, never the token.
@@ -405,6 +405,42 @@ async fn mark_read(
         .await
         .map_err(|_| DOWN)?;
     Ok(StatusCode::NO_CONTENT)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Edit {
+    starred: Option<bool>,
+    read: Option<bool>,
+}
+/// Stars or marks one message read, matching the local archive API.
+async fn update(
+    State(a): State<App>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(edit): Json<Edit>,
+) -> Result<StatusCode, Failure> {
+    if edit.starred.is_none() && edit.read.is_none() {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let user = identity(&a, &h, false).await?;
+    let changed = a
+        .pool
+        .get()
+        .await
+        .map_err(|_| DOWN)?
+        .execute(
+            "UPDATE archived_messages SET starred=coalesce($3,starred),
+                read_at=CASE WHEN $4::boolean IS NULL THEN read_at WHEN $4 THEN coalesce(read_at,now()) ELSE NULL END
+             WHERE account_id=$1 AND id=$2",
+            &[&user, &id.to_string(), &edit.starred, &edit.read],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if changed == 0 {
+        Err(StatusCode::NOT_FOUND)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 async fn remove(
     State(a): State<App>,
@@ -486,7 +522,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/contacts/{id}/card",
             put(put_card).layer(DefaultBodyLimit::max(512 * 1024)),
         )
-        .route("/messages/{id}", delete(remove))
+        .route("/messages/{id}", delete(remove).patch(update))
         .route("/events", get(browser::inbox_events))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(app);

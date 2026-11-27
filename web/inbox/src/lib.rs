@@ -17,6 +17,15 @@ struct Transcript {
 struct Line {
     time: String,
     body: String,
+    #[serde(default)]
+    starred: bool,
+}
+
+#[wasm_bindgen]
+extern "C" {
+    /// Defined by canvas.js; tells the inbox page which message was clicked.
+    #[wasm_bindgen(js_namespace = window, js_name = psmsStar)]
+    fn psms_star(index: u32);
 }
 
 impl Render for Transcript {
@@ -37,7 +46,7 @@ impl Render for Transcript {
             .text_color(rgb(ink))
             .font_family("IBM Plex Sans")
             .p(if compact { px(12.) } else { px(20.) });
-        for line in &self.messages {
+        for (index, line) in self.messages.iter().enumerate() {
             // The page sends a time only where the conversation resumes after a gap.
             if !line.time.is_empty() {
                 list = list.child(
@@ -52,16 +61,26 @@ impl Render for Transcript {
                         .child(line.time.clone()),
                 );
             }
+            // Clicking a bubble stars or unstars it; starred ones show a gold star.
             list = list.child(
-                div().flex().mb_1().child(
-                    div()
-                        .max_w(if compact { px(280.) } else { px(560.) })
-                        .px_3()
-                        .py_2()
-                        .bg(rgb(bubble))
-                        .rounded(px(18.))
-                        .child(line.body.clone()),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .mb_1()
+                    .child(
+                        div()
+                            .id(("bubble", index))
+                            .cursor_pointer()
+                            .max_w(if compact { px(280.) } else { px(560.) })
+                            .px_3()
+                            .py_2()
+                            .bg(rgb(bubble))
+                            .rounded(px(18.))
+                            .on_click(move |_, _, _| psms_star(index as u32))
+                            .child(line.body.clone()),
+                    )
+                    .when(line.starred, |d| d.child(div().text_sm().child("⭐"))),
             );
         }
         list

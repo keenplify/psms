@@ -82,7 +82,7 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Read conversations | Yes | Yes | `manage inbox` | search and get tools |
 | Unlock with the 12 words or key | Yes | Yes | key file | key at launch |
 | Unlock with the recovery kit PDF | Yes | Yes | `--key-file` takes the PDF | `--key-file` takes the PDF |
-| Star messages | Gap | Yes | `manage inbox` | star filter (read-only) |
+| Star messages | Yes: click a bubble or ☆, filter ★ | Yes | `manage inbox` | star filter (read-only) |
 | Read and unread status | Yes (hosted) | Yes (SQLite storage) | `inbox read`, `unread`, `list --unread` | `read` field and `unread` search filter |
 | New messages without refreshing | pushed | polls the local file | — | — |
 | Contact names and photos | Yes | Yes (SQLite storage) | `contact list`, `show` (photo reported, not shown) | contact cards on messages and contacts |

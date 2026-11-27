@@ -27,6 +27,7 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ready_at timestamptz;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_used_at timestamptz;
 -- Read status is shared by every signed-in browser. It reveals nothing about message contents.
 ALTER TABLE archived_messages ADD COLUMN IF NOT EXISTS read_at timestamptz;
+ALTER TABLE archived_messages ADD COLUMN IF NOT EXISTS starred boolean NOT NULL DEFAULT false;
 -- Contact cards, sealed with the archive key like messages. The phone's copy comes from its
 -- address book; the manual copy holds edits made in an inbox and wins when both exist.
 CREATE TABLE IF NOT EXISTS contact_cards (
