@@ -69,13 +69,32 @@ pub fn enrich(entry: &mut serde_json::Value, key: &str) {
         }
     }
     if let Some(reactions) = entry["reactions"].as_array().cloned() {
+        let events: Vec<serde_json::Value> = reactions
+            .iter()
+            .filter_map(|r| open_json(key, r["envelope"].as_str()?))
+            .collect();
+        let change = |v: &serde_json::Value| matches!(v["kind"].as_str(), Some("edit" | "unsend"));
         entry["reactions"] = json!(
-            reactions
+            events
                 .iter()
-                .filter_map(|r| open_json(key, r["envelope"].as_str()?))
+                .filter(|v| !change(v))
                 .map(|r| json!({"kind": r["kind"], "from": r["from"]}))
                 .collect::<Vec<_>>()
         );
+        // Edited or unsent on the sender's device after it was copied.
+        if let Some(latest) = events
+            .iter()
+            .filter(|v| change(v))
+            .max_by_key(|v| v["at"].as_i64().unwrap_or_default())
+        {
+            if latest["kind"] == "unsend" {
+                entry["unsent"] = json!(true);
+                entry["body"] = json!("");
+            } else {
+                entry["edited"] = json!(true);
+                entry["body"] = latest["text"].clone();
+            }
+        }
     }
 }
 /// Opens a listed chat: its title, members and whether it is a group.

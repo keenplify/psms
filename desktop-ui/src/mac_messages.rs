@@ -27,7 +27,8 @@ pub enum Mode {
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS desktop_mac_messages(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL, last_rowid INTEGER NOT NULL, copied INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS desktop_mac_chats(chat_id TEXT PRIMARY KEY, digest TEXT NOT NULL)";
+CREATE TABLE IF NOT EXISTS desktop_mac_chats(chat_id TEXT PRIMARY KEY, digest TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS desktop_mac_edits(id INTEGER PRIMARY KEY CHECK(id=1), after INTEGER NOT NULL)";
 /// The largest file copied, before sealing; larger ones are listed but not copied.
 pub const MAX_FILE: usize = 1_500_000;
 /// Wait this long after a text arrives, so the iPhone Shortcut's copy is in first.
@@ -76,6 +77,16 @@ pub fn set_mode(db: &Connection, mode: Mode) -> Result<(), String> {
         })
         .map_err(|_| access_hint())?
     };
+    // Edits and unsends count from now too.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.as_secs() as i64 - 978_307_200) * 1_000_000_000)
+        .unwrap_or_default();
+    db.execute(
+        "INSERT INTO desktop_mac_edits(id,after) VALUES(1,?1) ON CONFLICT(id) DO NOTHING",
+        [now],
+    )
+    .map_err(|e| e.to_string())?;
     db.execute(
         "INSERT INTO desktop_mac_messages(id,mode,last_rowid) VALUES(1,?1,?2)
          ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,
@@ -276,6 +287,93 @@ fn expand(path: &str) -> PathBuf {
     }
 }
 
+/// A message edited or unsent after it was copied: its GUID, its text now, whether it was
+/// unsent, and when (a Messages date).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Change {
+    pub guid: String,
+    pub text: String,
+    pub unsent: bool,
+    pub at: i64,
+}
+/// Rows up to `upto` that were edited or unsent after `after`, oldest change first. Like
+/// BlueBubbles, an unsent message is one with a retraction date or, once edited, no text left.
+/// Macs before Ventura have no edit columns; then there is nothing to read.
+pub fn read_changes(chat: &Connection, after: i64, upto: i64) -> rusqlite::Result<Vec<Change>> {
+    let mut stmt = chat.prepare(
+        "SELECT guid, text, attributedBody, coalesce(date_edited,0), coalesce(date_retracted,0)
+         FROM message WHERE ROWID <= ?2
+           AND (coalesce(date_edited,0) > ?1 OR coalesce(date_retracted,0) > ?1)
+         ORDER BY max(coalesce(date_edited,0), coalesce(date_retracted,0)) LIMIT 50",
+    )?;
+    stmt.query_map(params![after, upto], |r| {
+        let text: Option<String> = r.get(1)?;
+        let body: Option<Vec<u8>> = r.get(2)?;
+        let text = text
+            .filter(|t| !t.is_empty())
+            .or_else(|| body.as_deref().and_then(attributed_text))
+            .unwrap_or_default()
+            .replace('\u{fffc}', "")
+            .trim()
+            .to_string();
+        let (edited, retracted): (i64, i64) = (r.get(3)?, r.get(4)?);
+        Ok(Change {
+            guid: r.get(0)?,
+            unsent: retracted > 0 || text.is_empty(),
+            text,
+            at: edited.max(retracted),
+        })
+    })?
+    .collect()
+}
+/// Seals edits and unsends onto the messages they change, as one replaceable event each.
+fn copy_changes(
+    db: &Connection,
+    chat: &Connection,
+    key: &str,
+    inbox: &Inbox,
+    upto: i64,
+) -> Result<usize, String> {
+    let Ok(after) = db.query_row("SELECT after FROM desktop_mac_edits WHERE id=1", [], |r| {
+        r.get::<_, i64>(0)
+    }) else {
+        return Ok(0);
+    };
+    let Ok(changes) = read_changes(chat, after, upto) else {
+        return Ok(0);
+    };
+    let mut newest = after;
+    let mut stored = 0;
+    for change in changes {
+        let event = json!({
+            "kind": if change.unsent { "unsend" } else { "edit" },
+            "from": "",
+            "text": if change.unsent { "" } else { change.text.as_str() },
+            "at": unix_time(change.at),
+        });
+        let sealed = seal_json(key, &event).ok_or("Could not seal an edit.")?;
+        let route = format!(
+            "/messages/{}/reactions/{}",
+            record_id(&change.guid, key),
+            record_id(&format!("{}\nchange", change.guid), key)
+        );
+        // A change to a message this inbox doesn't have is skipped.
+        if inbox
+            .call(
+                reqwest::Method::PUT,
+                &route,
+                Some(json!({"envelope": sealed})),
+            )
+            .is_ok()
+        {
+            stored += 1;
+        }
+        newest = newest.max(change.at);
+    }
+    db.execute("UPDATE desktop_mac_edits SET after=?1 WHERE id=1", [newest])
+        .map_err(|e| e.to_string())?;
+    Ok(stored)
+}
 /// Whether a mode copies this row.
 pub fn wanted(mode: Mode, item: &Item) -> bool {
     match mode {
@@ -558,7 +656,7 @@ pub fn sync(db: &Connection, key: &str, inbox: &Inbox) -> Result<usize, String> 
     let chat = open_chat_db().map_err(|_| access_hint())?;
     let items = read_new(&chat, after, 50).map_err(|e| e.to_string())?;
     if items.is_empty() {
-        return Ok(0);
+        return copy_changes(db, &chat, key, inbox, after);
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -708,7 +806,7 @@ pub fn sync(db: &Connection, key: &str, inbox: &Inbox) -> Result<usize, String> 
         params![last, stored as i64],
     )
     .map_err(|e| e.to_string())?;
-    Ok(stored)
+    Ok(stored + copy_changes(db, &chat, key, inbox, last)?)
 }
 
 #[cfg(test)]
@@ -721,7 +819,8 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE message(ROWID INTEGER PRIMARY KEY, guid TEXT, text TEXT, attributedBody BLOB,
                handle_id INTEGER, service TEXT, date INTEGER, is_from_me INTEGER, item_type INTEGER,
-               associated_message_type INTEGER, associated_message_guid TEXT, thread_originator_guid TEXT);
+               associated_message_type INTEGER, associated_message_guid TEXT, thread_originator_guid TEXT,
+               date_edited INTEGER, date_retracted INTEGER);
              CREATE TABLE handle(ROWID INTEGER PRIMARY KEY, id TEXT);
              CREATE TABLE chat(ROWID INTEGER PRIMARY KEY, guid TEXT, chat_identifier TEXT, display_name TEXT, style INTEGER);
              CREATE TABLE chat_message_join(chat_id INTEGER, message_id INTEGER);
@@ -763,11 +862,11 @@ mod tests {
         body.push(13);
         body.extend_from_slice(b"From the body");
         db.execute_batch(&format!(
-            "INSERT INTO message VALUES(10,'G-A','Lunch at 12?',NULL,1,'iMessage',{date},0,0,0,NULL,NULL);
-             INSERT INTO message VALUES(11,'G-B',NULL,NULL,2,'iMessage',{date},0,0,0,NULL,'G-A');
-             INSERT INTO message VALUES(12,'G-C',NULL,NULL,0,'iMessage',{date},1,0,2001,'p:0/G-A',NULL);
-             INSERT INTO message VALUES(13,'G-D','renamed',NULL,0,'iMessage',{date},0,2,0,NULL,NULL);
-             INSERT INTO message VALUES(14,'G-E','Hi',NULL,1,'SMS',{date},0,0,0,NULL,NULL);
+            "INSERT INTO message VALUES(10,'G-A','Lunch at 12?',NULL,1,'iMessage',{date},0,0,0,NULL,NULL,NULL,NULL);
+             INSERT INTO message VALUES(11,'G-B',NULL,NULL,2,'iMessage',{date},0,0,0,NULL,'G-A',NULL,NULL);
+             INSERT INTO message VALUES(12,'G-C',NULL,NULL,0,'iMessage',{date},1,0,2001,'p:0/G-A',NULL,NULL,NULL);
+             INSERT INTO message VALUES(13,'G-D','renamed',NULL,0,'iMessage',{date},0,2,0,NULL,NULL,NULL,NULL);
+             INSERT INTO message VALUES(14,'G-E','Hi',NULL,1,'SMS',{date},0,0,0,NULL,NULL,NULL,NULL);
              INSERT INTO chat_message_join VALUES(2,10),(2,11),(2,12),(2,13),(1,14);
              INSERT INTO attachment VALUES(1,'{}','image/png','IMG_1.png',10,0);
              INSERT INTO message_attachment_join VALUES(11,1);",
@@ -816,6 +915,45 @@ mod tests {
         assert!(!r.to_string().contains("G-A"));
         assert_eq!(record_id("G-A", &key), record_id("G-A", &key));
         assert_ne!(record_id("G-A", &key), record_id("G-A", &"j".repeat(32)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_edits_and_unsends() {
+        let dir = std::env::temp_dir().join(format!("psms-edits-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = fixture(&dir.join("chat.db"));
+        db.execute_batch(
+            "INSERT INTO message VALUES(30,'E-A','Fixed typo',NULL,1,'iMessage',100,0,0,0,NULL,NULL,500,NULL);
+             INSERT INTO message VALUES(31,'E-B',NULL,NULL,1,'iMessage',100,0,0,0,NULL,NULL,600,600);
+             INSERT INTO message VALUES(32,'E-C','Untouched',NULL,1,'iMessage',100,0,0,0,NULL,NULL,NULL,NULL);
+             INSERT INTO message VALUES(40,'E-D','Too new',NULL,1,'iMessage',100,0,0,0,NULL,NULL,700,NULL);",
+        )
+        .unwrap();
+        let changes = read_changes(&db, 0, 32).unwrap();
+        assert_eq!(
+            changes,
+            [
+                Change {
+                    guid: "E-A".into(),
+                    text: "Fixed typo".into(),
+                    unsent: false,
+                    at: 500
+                },
+                Change {
+                    guid: "E-B".into(),
+                    text: String::new(),
+                    unsent: true,
+                    at: 600
+                },
+            ]
+        );
+        assert!(
+            read_changes(&db, 600, 40)
+                .unwrap()
+                .iter()
+                .all(|c| c.guid == "E-D")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -893,10 +1031,10 @@ mod tests {
             .as_secs() as i64;
         let date = (now - 60 - 978_307_200) * 1_000_000_000;
         chat.execute_batch(&format!(
-            "INSERT INTO message VALUES(20,'S-A','Hello from Messages',NULL,1,'SMS',{date},0,0,0,NULL,NULL);
-             INSERT INTO message VALUES(21,'S-B','Look at this',NULL,2,'iMessage',{date},0,0,0,NULL,NULL);
-             INSERT INTO message VALUES(22,'S-C',NULL,NULL,0,'iMessage',{date},1,0,2000,'p:0/S-B',NULL);
-             INSERT INTO message VALUES(23,'S-D','Nice!',NULL,0,'iMessage',{date},1,0,0,NULL,'S-B');
+            "INSERT INTO message VALUES(20,'S-A','Hello from Messages',NULL,1,'SMS',{date},0,0,0,NULL,NULL,NULL,NULL);
+             INSERT INTO message VALUES(21,'S-B','Look at this',NULL,2,'iMessage',{date},0,0,0,NULL,NULL,NULL,NULL);
+             INSERT INTO message VALUES(22,'S-C',NULL,NULL,0,'iMessage',{date},1,0,2000,'p:0/S-B',NULL,NULL,NULL);
+             INSERT INTO message VALUES(23,'S-D','Nice!',NULL,0,'iMessage',{date},1,0,0,NULL,'S-B',NULL,NULL);
              INSERT INTO chat_message_join VALUES(1,20),(2,21),(2,22),(2,23);
              INSERT INTO attachment VALUES(5,'{}','image/png','IMG_2.png',22,0);
              INSERT INTO message_attachment_join VALUES(21,5);",
@@ -970,7 +1108,7 @@ mod tests {
         );
         // Taking the tapback back removes it.
         chat.execute_batch(&format!(
-            "INSERT INTO message VALUES(24,'S-E',NULL,NULL,0,'iMessage',{date},1,0,3000,'p:0/S-B',NULL);
+            "INSERT INTO message VALUES(24,'S-E',NULL,NULL,0,'iMessage',{date},1,0,3000,'p:0/S-B',NULL,NULL,NULL);
              INSERT INTO chat_message_join VALUES(2,24);"
         )).unwrap();
         assert_eq!(sync(&settings, &key, &inbox).unwrap(), 1);

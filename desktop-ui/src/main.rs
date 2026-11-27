@@ -1946,6 +1946,9 @@ impl Dashboard {
                             .child(text),
                     );
                 }
+                if m.edited {
+                    column = column.child(self.caption("Edited"));
+                }
                 // Tapbacks, as Messages shows them under the bubble.
                 if !m.reactions.is_empty() {
                     let line = m

@@ -26,6 +26,8 @@ pub struct Mail {
     pub reactions: Vec<(String, String)>,
     /// The message this one replies to, by archive ID.
     pub reply_to: Option<String>,
+    /// Edited after it was sent; the text is the latest version.
+    pub edited: bool,
 }
 pub struct Thread {
     pub key: String,
@@ -231,10 +233,14 @@ pub fn group(
         if threads[idx].contact.is_none() && !is_group {
             threads[idx].contact = r.contact.clone();
         }
-        let reactions = r
+        let events: Vec<serde_json::Value> = r
             .reactions
             .iter()
             .filter_map(|e| key.and_then(|k| crate::mac_messages::open_json(k, e)))
+            .collect();
+        let reactions = events
+            .iter()
+            .filter(|v| !matches!(v["kind"].as_str(), Some("edit" | "unsend")))
             .filter_map(|v| {
                 Some((
                     v["kind"].as_str()?.to_string(),
@@ -242,7 +248,23 @@ pub fn group(
                 ))
             })
             .collect();
-        let mut files: Vec<(String, String, bool)> = extra["attachments"]
+        // An edit replaces the text; an unsend leaves a note where the message was.
+        let change = events
+            .iter()
+            .filter(|v| matches!(v["kind"].as_str(), Some("edit" | "unsend")))
+            .max_by_key(|v| v["at"].as_i64().unwrap_or_default());
+        let unsent = change.is_some_and(|v| v["kind"] == "unsend");
+        let text = match change {
+            Some(_) if unsent => "This message was unsent.".to_string(),
+            Some(v) => v["text"].as_str().map(String::from).unwrap_or(text),
+            None => text,
+        };
+        let shown = if unsent {
+            serde_json::Value::Null
+        } else {
+            extra["attachments"].clone()
+        };
+        let mut files: Vec<(String, String, bool)> = shown
             .as_array()
             .into_iter()
             .flatten()
@@ -255,7 +277,7 @@ pub fn group(
             })
             .collect();
         // Files the record lists without details (from an older copy): show them generically.
-        while (files.len() as i64) < r.files.min(10) {
+        while !unsent && (files.len() as i64) < r.files.min(10) {
             files.push(("application/octet-stream".into(), "File".into(), false));
         }
         threads[idx].items.push(Mail {
@@ -272,6 +294,7 @@ pub fn group(
             files,
             reactions,
             reply_to: extra["reply_to"].as_str().map(String::from),
+            edited: change.is_some() && !unsent,
         });
     }
     (threads, older)

@@ -61,15 +61,16 @@ with tempfile.TemporaryDirectory() as root:
    d.execute("INSERT INTO messages(id,sender,body) VALUES(?,'papamo:encrypted:v1',?)",(gid,seal({"sender":"+15550187","body":"Look at this","thread":chat,"attachments":[{"type":"image/png","name":"IMG_1.png"}]})))
    d.execute("INSERT INTO message_chats VALUES(?,?)",(gid,chat))
    d.execute("INSERT INTO message_reactions(id,message_id,envelope) VALUES(?,?,?)",(str(uuid.uuid4()),gid,seal({"kind":"love","from":"me"})))
+   d.execute("INSERT INTO message_reactions(id,message_id,envelope) VALUES(?,?,?)",(str(uuid.uuid4()),gid,seal({"kind":"edit","from":"","text":"Look at this one","at":5})))
    d.execute("INSERT INTO message_attachments(message_id,idx,envelope) VALUES(?,0,?)",(gid,seal("photo bytes")))
   d.close()
   chats=tool(22,"list_chats",{})["chats"];assert chats[0]["title"]=="Lunch crew" and chats[0]["send_to"]=="iMessage;+;chat777" and chats[0]["id"]==chat
   found=tool(23,"search_messages",{"chat":chat})["messages"];assert [m["id"] for m in found]==[gid]
-  assert found[0]["text"]=="Look at this" and found[0]["reactions"]==[{"kind":"love","from":"me"}] and found[0]["attachments"][0]["name"]=="IMG_1.png" and found[0]["thread"]==chat
+  assert found[0]["text"]=="Look at this one" and found[0]["edited"] is True and found[0]["reactions"]==[{"kind":"love","from":"me"}] and found[0]["attachments"][0]["name"]=="IMG_1.png" and found[0]["thread"]==chat
   saved=tool(24,"save_attachment",{"id":gid,"directory":root});assert Path(saved["saved"]).read_bytes()==b'"photo bytes"'
   assert json.loads(manage("inbox","chats","--key-file",str(kf)))["chats"][0]["members"]==["+15550142","+15550187"]
   out=Path(root)/"saved.bin";manage("inbox","save",gid,"--key-file",str(kf),"--out",str(out));assert out.read_bytes()==b'"photo bytes"'
-  listed=json.loads(manage("inbox","list","--chat",chat,"--key-file",str(kf)))["messages"];assert listed[0]["body"]=="Look at this" and listed[0]["reactions"][0]["kind"]=="love"
+  listed=json.loads(manage("inbox","list","--chat",chat,"--key-file",str(kf)))["messages"];assert listed[0]["body"]=="Look at this one" and listed[0]["reactions"][0]["kind"]=="love"
   # Devices-only send API: a send key from a private address queues texts, nothing else works.
   import socket,time,urllib.request,urllib.error
   sock=socket.socket();sock.bind(("127.0.0.1",0));port=sock.getsockname()[1];sock.close()
