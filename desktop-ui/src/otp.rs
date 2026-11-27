@@ -2,14 +2,11 @@
 //! native notification with **Copy code** and **Type code**. While the code is fresh (one
 //! minute), pressing Tab in any app types it instead of moving focus. Codes are kept in memory
 //! only and never logged.
-use std::{
-    collections::HashSet,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, sync::Mutex, time::Instant};
 
 /// How long Tab types the latest code.
-const FRESH: Duration = Duration::from_secs(60);
+#[cfg(target_os = "macos")]
+const FRESH: std::time::Duration = std::time::Duration::from_secs(60);
 /// Texts older than this when pSMS sees them are not announced.
 pub const RECENT_SECS: i64 = 300;
 
@@ -112,6 +109,7 @@ pub fn announce(message_id: &str, sender: &str, code: &str) {
 }
 
 /// The latest code if it is still fresh, taken so it is typed only once.
+#[cfg(target_os = "macos")]
 fn take_fresh() -> Option<String> {
     let mut active = ACTIVE.lock().ok()?;
     match active.take() {
@@ -119,6 +117,7 @@ fn take_fresh() -> Option<String> {
         _ => None,
     }
 }
+#[cfg(target_os = "macos")]
 fn is_fresh() -> bool {
     ACTIVE
         .lock()
@@ -212,6 +211,7 @@ mod platform {
         UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
     use std::sync::OnceLock;
+    use std::time::Duration;
 
     const CATEGORY: &str = "psms.code";
     const TAB: i64 = 48;

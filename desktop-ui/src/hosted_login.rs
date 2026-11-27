@@ -340,7 +340,7 @@ mod tests {
                         get(move |headers: HeaderMap| async move {
                             assert_eq!(headers["authorization"], format!("Bearer {token}"));
                             axum::Json(
-                                serde_json::json!({"username":"tester","used":17,"limit":1000}),
+                                serde_json::json!({"username":"tester","used":17,"limit":100}),
                             )
                         }),
                     ),
@@ -362,6 +362,7 @@ mod tests {
             let account = returned.await.unwrap().unwrap();
             assert_eq!(account.username, "tester");
             assert_eq!(account.used, 17);
+            assert_eq!(account.limit, Some(100));
         });
     }
 }

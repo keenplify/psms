@@ -4,6 +4,7 @@ use std::{
     process::{Child, Command, Stdio},
 };
 /// Whether this program runs from inside pSMS.app on a Mac.
+#[cfg(unix)]
 pub fn in_app_bundle() -> bool {
     cfg!(target_os = "macos")
         && env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))

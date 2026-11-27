@@ -86,29 +86,33 @@ try:
     assert call("auth/browser",token=owner,method="DELETE")[0]==204
     assert call("otp/recent",token=personal)[0]==401
     assert call("messages",msg,other)[0]==201
-    sql("INSERT INTO archived_messages(account_id,id,sender,body) SELECT a.id,gen_random_uuid()::text,'papamo:encrypted:v1','fixture' FROM accounts a CROSS JOIN generate_series(1,998) WHERE a.username='"+a["subject"]+"';")
+    free_limit=100
+    assert call("me",token=owner)[1]["limit"]==free_limit
+    sql(f"INSERT INTO archived_messages(account_id,id,sender,body) SELECT a.id,gen_random_uuid()::text,'papamo:encrypted:v1','fixture' FROM accounts a CROSS JOIN generate_series(1,{free_limit-2}) WHERE a.username='"+a["subject"]+"';")
     with ThreadPoolExecutor(2) as pool:
         results=list(pool.map(lambda _:call("messages",{**msg,"id":str(uuid.uuid4())},upload)[0],range(2)))
-    assert sorted(results)==[201,507],results
-    assert call("messages",msg,upload)[0]==200
-    assert call("me",token=owner)[1]["used"]==1000
-    assert call("messages/"+msg["id"],token=owner,method="DELETE")[0]==204
+    assert results==[201,201],results
+    assert call("me",token=owner)[1]["used"]==free_limit
+    # The oldest unstarred message made room for the second concurrent arrival.
     assert call("messages",msg,upload)[0]==201
+    assert call("messages",msg,upload)[0]==200
     if db_name.startswith("psms_qa_"):
         # Exercise role transitions in an isolated database with existing sessions.
         def grant(ttl):
             sql("INSERT INTO admin_role_snapshot VALUES(true,jsonb_build_array('"+a["subject"]+"'::text),now()+interval '"+ttl+"') ON CONFLICT(singleton) DO UPDATE SET subjects=excluded.subjects,expires_at=excluded.expires_at")
         grant("5 minutes")
         assert call("me",token=owner)[1]["limit"] is None
-        assert call("me",token=other)[1]["limit"]==1000
+        assert call("me",token=other)[1]["limit"]==free_limit
         extra={**msg,"id":str(uuid.uuid4())}
         assert call("messages",extra,upload)[0]==201
-        assert len(call("messages?offset=1000",token=owner)[1]["messages"])==1
+        assert len(call(f"messages?offset={free_limit}",token=owner)[1]["messages"])==1
+        sql("UPDATE archived_messages SET starred=true WHERE account_id=(SELECT id FROM accounts WHERE username='"+a["subject"]+"')")
         grant("-1 second")
         assert call("messages",{**msg,"id":str(uuid.uuid4())},upload)[0]==507
         grant("5 minutes")
         sql("UPDATE admin_role_snapshot SET subjects='[]'")
-        assert call("me",token=owner)[1]=={"username":a["username"],"used":1001,"limit":1000}
+        account=call("me",token=owner)[1]
+        assert (account["used"],account["limit"])==(free_limit+1,free_limit)
         assert call("messages",extra,upload)[0]==200
         assert call("messages",{**msg,"id":str(uuid.uuid4())},upload)[0]==507
         print("PASS promotion, expiry, demotion, pagination and retry above the free limit")
