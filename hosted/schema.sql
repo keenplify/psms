@@ -21,6 +21,8 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS sg_subject text;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS seen_at timestamptz;
 -- Set on a phone token's first stored message, so its setup page can confirm it worked.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS used_at timestamptz;
+-- Set when the person finishes the phone's setup page, so the inbox shows the recovery kit.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ready_at timestamptz;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_sg_subject ON accounts(sg_subject);

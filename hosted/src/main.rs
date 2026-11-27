@@ -143,18 +143,33 @@ async fn mark_seen(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Fai
         Err(DENIED)
     }
 }
+async fn mark_ready(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failure> {
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let updated = db
+        .execute(
+            "UPDATE sessions SET ready_at=now() WHERE digest=$1 AND scope='upload' AND expires_at>now()",
+            &[&bearer(&h)?],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if updated == 1 {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(DENIED)
+    }
+}
 async fn seen(State(a): State<App>, h: HeaderMap) -> Reply {
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let row = db
         .query_opt(
-            "SELECT seen_at IS NOT NULL, used_at IS NOT NULL FROM sessions WHERE digest=$1 AND scope='upload' AND expires_at>now()",
+            "SELECT seen_at IS NOT NULL, used_at IS NOT NULL, ready_at IS NOT NULL FROM sessions WHERE digest=$1 AND scope='upload' AND expires_at>now()",
             &[&bearer(&h)?],
         )
         .await
         .map_err(|_| DOWN)?
         .ok_or(DENIED)?;
     Ok(Json(
-        json!({"opened": row.get::<_, bool>(0), "used": row.get::<_, bool>(1)}),
+        json!({"opened": row.get::<_, bool>(0), "used": row.get::<_, bool>(1), "ready": row.get::<_, bool>(2)}),
     ))
 }
 async fn store(
@@ -289,6 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/otp/events", get(browser::events))
         .route("/pair", post(pair))
         .route("/pair/seen", get(seen).post(mark_seen))
+        .route("/pair/ready", post(mark_ready))
         .route("/messages", get(list).post(store))
         .route("/messages/{id}", delete(remove))
         .layer(DefaultBodyLimit::max(64 * 1024))
