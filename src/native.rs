@@ -3,11 +3,18 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-/// Whether this program runs from inside pSMS.app on a Mac.
+/// The bundle ID macOS gives pSMS.app.
+#[cfg(unix)]
+pub const BUNDLE_ID: &str = "dev.papamo.psms";
+/// Whether macOS launched this as pSMS.app. Updated versions run from pSMS's data folder, not
+/// the bundle, so this follows the bundle ID macOS sets for an app it opens, which carries
+/// through the launcher's hand-off to the active version.
 #[cfg(unix)]
 pub fn in_app_bundle() -> bool {
     cfg!(target_os = "macos")
-        && env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        && (env::var("__CFBundleIdentifier").is_ok_and(|id| id == BUNDLE_ID)
+            || env::current_exe()
+                .is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/")))
 }
 /// Becomes the desktop window in this same process, so pSMS.app shows one Dock icon with its
 /// own name and icon instead of a second, unnamed program. Returns only if that failed.

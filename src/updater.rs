@@ -295,6 +295,32 @@ async fn apply(
         return Err(e.into());
     }
     let restart_window = reopen && opts.restart.is_some();
+    // pSMS.app reopens through macOS, so the Dock shows one pSMS: after a moment, once this
+    // window has quit and released the one-window lock.
+    #[cfg(target_os = "macos")]
+    if restart_window && crate::native::in_app_bundle() {
+        if running {
+            Command::new(target.join(executable("psms")))
+                .arg("--database")
+                .arg(db)
+                .arg("init")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+        }
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "sleep 2; /usr/bin/open -b \"$0\"",
+                crate::native::BUNDLE_ID,
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        println!("Updated pSMS to {version}.");
+        return Ok(());
+    }
     if restart_window || running {
         let cmd = if restart_window { "desktop" } else { "init" };
         let status = Command::new(target.join(executable("psms")))
