@@ -22,6 +22,9 @@ pub async fn queue(
     Json(q): Json<Queue>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), Failure> {
     let user = identity(&a, &h, false).await?;
+    if !crate::plans::gates(&a, user).await?.replies {
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
     if q.envelope.len() > 16_000 || !encryption::accepts(encryption::ACTIONS, &q.envelope) {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }

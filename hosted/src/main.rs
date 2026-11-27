@@ -1,5 +1,6 @@
 mod browser;
 mod outbox;
+mod plans;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -34,6 +35,7 @@ const DENIED: Failure = StatusCode::UNAUTHORIZED;
 pub(crate) struct App {
     pub(crate) arrivals: tokio::sync::broadcast::Sender<Option<i64>>,
     pub(crate) pool: Pool,
+    pub(crate) plans: std::sync::Arc<plans::Cache>,
     exchange_key: String,
 }
 #[derive(Deserialize)]
@@ -57,6 +59,73 @@ fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
         .filter(|v| v.len() == 64)
         .ok_or(DENIED)?;
     Ok(Sha256::digest(token.as_bytes()).to_vec())
+}
+/// Free accounts get 100 API calls per 30 minutes from tokens other services use (computer
+/// tokens today). The signed-in inbox, phone uploads and the Mac relay's queue checks are not
+/// counted, and unlimited plans and self-hosted servers have no limit.
+async fn throttle(
+    State(a): State<App>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let path = request.uri().path();
+    let relay_poll = path.ends_with("/outbox/claim") || path.ends_with("/result");
+    let Ok(digest) = bearer(request.headers()) else {
+        return next.run(request).await;
+    };
+    if relay_poll {
+        return next.run(request).await;
+    }
+    let Ok(db) = a.pool.get().await else {
+        return DOWN.into_response();
+    };
+    let counted = db
+        .query_opt(
+            "INSERT INTO api_usage(account_id,window_start,calls)
+               SELECT s.account_id, now(), 1 FROM sessions s JOIN archive_quota q ON q.id=s.account_id
+               WHERE s.digest=$1 AND s.scope='computer' AND s.expires_at>now() AND q.api_calls_per_30_min IS NOT NULL
+             ON CONFLICT(account_id) DO UPDATE SET
+               calls=CASE WHEN api_usage.window_start <= now()-interval '30 minutes' THEN 1 ELSE api_usage.calls+1 END,
+               window_start=CASE WHEN api_usage.window_start <= now()-interval '30 minutes' THEN now() ELSE api_usage.window_start END
+             RETURNING calls::bigint, ceil(extract(epoch FROM window_start + interval '30 minutes' - now()))::bigint,
+               (SELECT api_calls_per_30_min::bigint FROM archive_quota WHERE id=api_usage.account_id)",
+            &[&digest],
+        )
+        .await;
+    drop(db);
+    let Some(row) = (match counted {
+        Ok(row) => row,
+        Err(_) => return DOWN.into_response(),
+    }) else {
+        return next.run(request).await;
+    };
+    let (calls, reset, limit): (i64, i64, i64) = (
+        row.get(0),
+        row.get::<_, i64>(1).max(1),
+        row.get::<_, Option<i64>>(2).unwrap_or(i64::MAX),
+    );
+    let mut response = if calls > limit {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error": format!("This account has used its {limit} API calls for the last 30 minutes. Upgrade your plan to remove the limit.")})),
+        )
+            .into_response()
+    } else {
+        next.run(request).await
+    };
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("x-ratelimit-limit", limit),
+        ("x-ratelimit-remaining", (limit - calls).max(0)),
+        ("x-ratelimit-reset", reset),
+    ] {
+        headers.insert(name, value.into());
+    }
+    if calls > limit {
+        headers.insert("retry-after", reset.into());
+    }
+    response
 }
 pub(crate) async fn identity(app: &App, h: &HeaderMap, upload: bool) -> Result<i64, Failure> {
     let db = app.pool.get().await.map_err(|_| DOWN)?;
@@ -110,15 +179,22 @@ async fn logout(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failur
 async fn me(State(a): State<App>, h: HeaderMap) -> Reply {
     let id = identity(&a, &h, false).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
-    let row=db.query_one("SELECT coalesce(display_name,username),(SELECT count(*) FROM archived_messages WHERE account_id=$1),q.message_limit FROM accounts a JOIN archive_quota q USING(id) WHERE a.id=$1",&[&id]).await.map_err(|_|DOWN)?;
+    let row=db.query_one("SELECT coalesce(display_name,username),(SELECT count(*) FROM archived_messages WHERE account_id=$1),q.message_limit,q.plan,q.plan_name,q.api_calls_per_30_min,q.webhooks,q.admin,q.max_phones,q.replies,q.autofill FROM accounts a JOIN archive_quota q USING(id) WHERE a.id=$1",&[&id]).await.map_err(|_|DOWN)?;
     Ok(Json(
-        json!({"username":row.get::<_,String>(0),"used":row.get::<_,i64>(1),"limit":row.get::<_,Option<i64>>(2)}),
+        json!({"username":row.get::<_,String>(0),"used":row.get::<_,i64>(1),"limit":row.get::<_,Option<i64>>(2),
+            "plan":{"id":row.get::<_,String>(3),"name":row.get::<_,String>(4),"api_calls_per_30_min":row.get::<_,Option<i32>>(5),"webhooks":row.get::<_,bool>(6),
+                "max_phones":row.get::<_,Option<i32>>(8),"replies":row.get::<_,bool>(9),"autofill":row.get::<_,bool>(10)},
+            "admin":row.get::<_,bool>(7)}),
     ))
 }
 /// A year-long token for a computer that serves this inbox, such as pSMS for Mac sending
 /// queued texts. It can do what a signed-in inbox can, and is listed and removed with phones.
-async fn computer(State(a): State<App>, h: HeaderMap) -> Reply {
+async fn computer(State(a): State<App>, h: HeaderMap) -> Result<axum::response::Response, Failure> {
+    use axum::response::IntoResponse;
     let id = identity(&a, &h, false).await?;
+    if !plans::gates(&a, id).await?.replies {
+        return Ok(plans::upgrade("Replying from anywhere"));
+    }
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let (token, digest) = new_token();
     db.execute(
@@ -127,11 +203,28 @@ async fn computer(State(a): State<App>, h: HeaderMap) -> Reply {
     )
     .await
     .map_err(|_| DOWN)?;
-    Ok(Json(json!({"token":token})))
+    Ok(Json(json!({"token":token})).into_response())
 }
-async fn pair(State(a): State<App>, h: HeaderMap) -> Reply {
+async fn pair(State(a): State<App>, h: HeaderMap) -> Result<axum::response::Response, Failure> {
+    use axum::response::IntoResponse;
     let id = identity(&a, &h, false).await?;
+    let gates = plans::gates(&a, id).await?;
     let db = a.pool.get().await.map_err(|_| DOWN)?;
+    if let Some(max) = gates.max_phones {
+        let phones: i64 = db
+            .query_one(
+                "SELECT count(*) FROM sessions WHERE account_id=$1 AND scope='upload' AND expires_at>now()",
+                &[&id],
+            )
+            .await
+            .map_err(|_| DOWN)?
+            .get(0);
+        if phones >= max as i64 {
+            return Ok(plans::upgrade(&format!(
+                "Connecting more than {max} phones"
+            )));
+        }
+    }
     let (token, digest) = new_token();
     db.execute(
         "INSERT INTO sessions VALUES($1,$2,now()+interval '1 year','upload')",
@@ -139,7 +232,7 @@ async fn pair(State(a): State<App>, h: HeaderMap) -> Reply {
     )
     .await
     .map_err(|_| DOWN)?;
-    Ok(Json(json!({"token":token})))
+    Ok(Json(json!({"token":token})).into_response())
 }
 // The phone's pairing page marks its upload token as opened; the inbox and that page poll the
 // same token to see whether it opened the page and stored its first message.
@@ -210,13 +303,25 @@ async fn store(
     if let Some(row)=tx.query_opt("SELECT sender=$3 AND body=$4 AND contact_id IS NOT DISTINCT FROM $5 FROM archived_messages WHERE account_id=$1 AND id=$2",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?{
  return if row.get::<_,bool>(0){Ok((StatusCode::OK, Json(card_hint(&tx, user, contact.as_deref()).await?)))}else{Err(StatusCode::CONFLICT)}
  }
-    let full: bool = tx.query_one(
-        "SELECT CASE WHEN message_limit IS NULL THEN false ELSE
-         (SELECT count(*) FROM (SELECT 1 FROM archived_messages WHERE account_id=$1 LIMIT message_limit) bounded) >= message_limit
+    // A full free archive makes room by deleting its oldest messages. Starred ones are kept.
+    let excess: i64 = tx.query_one(
+        "SELECT CASE WHEN message_limit IS NULL THEN 0 ELSE
+         greatest((SELECT count(*) FROM archived_messages WHERE account_id=$1) - message_limit + 1, 0)
          END FROM archive_quota WHERE id=$1", &[&user]
     ).await.map_err(|_|DOWN)?.get(0);
-    if full {
-        return Err(StatusCode::INSUFFICIENT_STORAGE);
+    if excess > 0 {
+        let removed = tx
+            .execute(
+                "DELETE FROM archived_messages WHERE account_id=$1 AND id IN (
+                   SELECT id FROM archived_messages WHERE account_id=$1 AND NOT starred
+                   ORDER BY received_at, id LIMIT $2)",
+                &[&user, &excess],
+            )
+            .await
+            .map_err(|_| DOWN)?;
+        if (removed as i64) < excess {
+            return Err(StatusCode::INSUFFICIENT_STORAGE);
+        }
     }
     tx.execute("INSERT INTO archived_messages(account_id,id,sender,body,contact_id) VALUES($1,$2,$3,$4,$5)",&[&user,&id,&m.sender,&m.body,&contact]).await.map_err(|_|DOWN)?;
     tx.execute(
@@ -511,6 +616,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App {
         arrivals,
         pool,
+        plans: Default::default(),
         exchange_key: std::fs::read_to_string(
             std::env::var("PSMS_HOSTED_IDENTITY_KEY")
                 .unwrap_or_else(|_| "/etc/psms/hosted-db/identity-key".into()),
@@ -529,6 +635,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/otp/recent", get(browser::recent))
         .route("/otp/events", get(browser::events))
+        .route("/plans", get(plans::list))
+        .route("/admin/plans", get(plans::admin_list))
+        .route("/admin/plans/{id}", put(plans::admin_save))
         .route("/pair", post(pair))
         .route("/computers", post(computer))
         .route("/outbox", get(outbox::list).post(outbox::queue))
@@ -549,6 +658,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/messages/{id}", delete(remove).patch(update))
         .route("/events", get(browser::inbox_events))
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::from_fn_with_state(app.clone(), throttle))
         .with_state(app);
     axum::serve(
         tokio::net::TcpListener::bind((

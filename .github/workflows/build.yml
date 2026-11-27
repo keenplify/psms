@@ -64,6 +64,9 @@ jobs:
           dpkg-deb -c "$bin/psms-$label.deb" > target/psms-deb-list.txt
           grep -F 'usr/share/applications/dev.papamo.psms.desktop' target/psms-deb-list.txt
           rpm -qpl "$bin/psms-$label.rpm" | grep -Fx '/usr/share/applications/dev.papamo.psms.desktop'
+      - name: Build macOS disk image
+        if: runner.os == 'macOS'
+        run: packaging/macos/build-dmg.sh target/${{ matrix.target }}/release "$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys;print(json.load(sys.stdin)["packages"][0]["version"])')"
       - uses: actions/upload-artifact@v4
         with:
           name: papamo-sms-${{ matrix.target }}
@@ -73,6 +76,7 @@ jobs:
             target/${{ matrix.target }}/release/psms-windows-x64-setup.exe
             target/${{ matrix.target }}/release/psms-linux-*.deb
             target/${{ matrix.target }}/release/psms-linux-*.rpm
+            target/${{ matrix.target }}/release/psms-macos-*.dmg
 
 
 # Release only after all platform builds and smoke tests pass.

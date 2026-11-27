@@ -22,6 +22,9 @@ async fn account(app: &App, h: &HeaderMap) -> Result<i64, Failure> {
 }
 pub(super) async fn issue(State(a): State<App>, h: HeaderMap) -> Reply {
     let user = identity(&a, &h, false).await?;
+    if !crate::plans::gates(&a, user).await?.autofill {
+        return Err(axum::http::StatusCode::PAYMENT_REQUIRED);
+    }
     let (token, digest) = new_token();
     a.pool.get().await.map_err(|_|DOWN)?.execute("INSERT INTO browser_access VALUES ($1,$2,now()+interval '7 days') ON CONFLICT(account_id) DO UPDATE SET digest=excluded.digest,expires_at=excluded.expires_at", &[&user,&digest]).await.map_err(|_|DOWN)?;
     Ok(Json(json!({"token":token})))

@@ -178,7 +178,7 @@ impl Dashboard {
                 )
         } else {
             card.child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Use your Papamo account"))
-                .child("Store up to 1,000 encrypted messages for free. Papamo runs the database and provides the HTTPS address for your phone.")
+                .child("Keep your latest 100 encrypted messages for free. Papamo runs the database and provides the HTTPS address for your phone.")
                 .child(button("papamo-login", if self.form.signing_in {"Waiting for sign-in…"} else {"Sign in with Papamo"})
                     .icon(IconName::Globe).primary().disabled(self.form.signing_in || self.form.busy)
                     .on_click(cx.listener(|s, _, window, cx| s.sign_in(window, cx))))

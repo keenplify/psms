@@ -229,8 +229,15 @@ pub fn computer_token(signed_in: &str) -> Result<String, String> {
             .bearer_auth(signed_in)
             .send()
             .await
-            .and_then(|r| r.error_for_status())
-            .map_err(|_| "Could not add this Mac to your account. Sign in again.".to_string())?
+            .map_err(|_| "Could not reach your account. Try again.".to_string())
+            .and_then(|r| match r.status().as_u16() {
+                402 => Err(
+                    "Your plan does not include replying from anywhere. See papamo.dev/sms#plans."
+                        .to_string(),
+                ),
+                s if (200..300).contains(&s) => Ok(r),
+                _ => Err("Could not add this Mac to your account. Sign in again.".to_string()),
+            })?
             .json()
             .await
             .map_err(|_| "Invalid account response.".to_string())?;

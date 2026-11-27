@@ -43,6 +43,8 @@ for target, label in targets.items():
         installers = [f"psms-{label}-setup.exe"]
     elif label.startswith("linux-"):
         installers = [f"psms-{label}.deb", f"psms-{label}.rpm"]
+    elif label.startswith("macos-"):
+        installers = [f"psms-{label}.dmg"]
     for name in installers:
         shutil.copyfile(folder / name, out / name)
 for browser in ("chrome","firefox"):

@@ -48,12 +48,52 @@ CREATE TABLE IF NOT EXISTS admin_role_snapshot (
 );
 REVOKE ALL ON admin_role_snapshot FROM psms_runtime;
 GRANT SELECT ON admin_role_snapshot TO psms_runtime;
+-- Plans set each account's limits. NULL means unlimited. Billing will set accounts.plan;
+-- the runtime role can read plans but never change them.
+CREATE TABLE IF NOT EXISTS plans (
+ id text PRIMARY KEY CHECK (id ~ '^[a-z]+$'), name text NOT NULL,
+ message_limit bigint CHECK (message_limit > 0), api_calls_per_30_min integer CHECK (api_calls_per_30_min > 0),
+ monthly_price_cents integer NOT NULL DEFAULT 0, available boolean NOT NULL DEFAULT false
+);
+INSERT INTO plans(id,name,message_limit,api_calls_per_30_min,monthly_price_cents,available) VALUES
+ ('free','Free',100,100,0,true),
+ ('plus','Plus',NULL,NULL,0,false),
+ ('enterprise','Enterprise',NULL,NULL,0,false)
+ON CONFLICT(id) DO NOTHING;
+REVOKE ALL ON plans FROM psms_runtime;
+GRANT SELECT ON plans TO psms_runtime;
+-- Paid features. Hosted webhooks, when they arrive, are for plans with this flag.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS webhooks boolean NOT NULL DEFAULT false;
+UPDATE plans SET webhooks=true WHERE id IN ('plus','enterprise') AND NOT webhooks;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'free' REFERENCES plans;
+-- Plan details admins edit from the inbox: price wording, perks shown on the pricing page,
+-- and feature gates. NULL limits mean unlimited.
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS price_label text;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS perks text[] NOT NULL DEFAULT '{}';
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_phones integer CHECK (max_phones > 0);
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS replies boolean NOT NULL DEFAULT true;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS autofill boolean NOT NULL DEFAULT true;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS sort integer NOT NULL DEFAULT 0;
+UPDATE plans SET sort=0, max_phones=3, perks=ARRAY['Your latest 100 encrypted messages; the oldest unstarred ones make room for new texts','Up to 3 phones','Reply from anywhere with pSMS for Mac','Contact cards, read status and stars','Browser autofill for one-time codes','100 API calls every 30 minutes'] WHERE id='free' AND perks='{}';
+UPDATE plans SET sort=1, monthly_price_cents=300, price_label='Coming soon', perks=ARRAY['Unlimited messages, kept until you delete them','Unlimited phones and Macs','Unlimited API calls','Webhooks when a text arrives','Everything in Free'] WHERE id='plus' AND perks='{}';
+UPDATE plans SET sort=2, price_label='Contact us', perks=ARRAY['Everything in Plus','Team inboxes for shared numbers','Custom retention and data residency','Priority support'] WHERE id='enterprise' AND perks='{}';
+GRANT UPDATE (name, message_limit, api_calls_per_30_min, monthly_price_cents, available, webhooks,
+  price_label, perks, max_phones, replies, autofill) ON plans TO psms_runtime;
+-- Effective limits for each account. Admins are unlimited whatever their plan.
 CREATE OR REPLACE VIEW archive_quota AS
- SELECT a.id, CASE WHEN EXISTS (
+ SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE p.message_limit END AS message_limit,
+   p.id AS plan, p.name AS plan_name,
+   CASE WHEN admin.yes THEN NULL::integer ELSE p.api_calls_per_30_min END AS api_calls_per_30_min,
+   admin.yes OR p.webhooks AS webhooks,
+   CASE WHEN admin.yes THEN NULL::integer ELSE p.max_phones END AS max_phones,
+   admin.yes OR p.replies AS replies,
+   admin.yes OR p.autofill AS autofill,
+   admin.yes AS admin
+ FROM accounts a JOIN plans p ON p.id=a.plan
+ CROSS JOIN LATERAL (SELECT EXISTS (
    SELECT 1 FROM admin_role_snapshot s
    WHERE s.expires_at > statement_timestamp() AND s.subjects ? a.sg_subject
- ) THEN NULL::bigint ELSE 1000::bigint END AS message_limit
- FROM accounts a;
+ ) AS yes) admin;
 REVOKE ALL ON archive_quota FROM psms_runtime;
 GRANT SELECT ON archive_quota TO psms_runtime;
 CREATE TABLE IF NOT EXISTS browser_access (
@@ -73,4 +113,10 @@ CREATE TABLE IF NOT EXISTS outbox (
  PRIMARY KEY (account_id, id)
 );
 GRANT SELECT,INSERT,UPDATE,DELETE ON outbox TO psms_runtime;
+-- API calls from tokens other services use, counted per free account in 30-minute windows.
+CREATE TABLE IF NOT EXISTS api_usage (
+ account_id bigint PRIMARY KEY REFERENCES accounts ON DELETE CASCADE,
+ window_start timestamptz NOT NULL, calls integer NOT NULL
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON api_usage TO psms_runtime;
 COMMIT;

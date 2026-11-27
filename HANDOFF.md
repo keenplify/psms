@@ -105,6 +105,19 @@ Each recipient has a separate encrypted archive. Bundled SQLite is the default. 
 
 The desktop groups incoming messages into conversations and supports dark mode. On a Mac it replies through the Messages app with AppleScript, using Text Message Forwarding for SMS when the iPhone allows it, and saves each sent reply sealed in the archive through `POST /v1/messages`.
 
+### Plans
+
+Hosted accounts have a plan (`accounts.plan` → `plans`): Free, Plus and Enterprise. Self-hosted pSMS has no plans or limits.
+
+- Free: the latest 100 messages (a new message deletes the oldest unstarred one; an all-starred full archive refuses with 507), 3 phones, replies, autofill, contact cards, and 100 API calls per 30 minutes. Plus and Enterprise are unlimited and include webhooks; both are not yet open for sign-up (no billing yet), and the pricing page offers a waitlist or contact link.
+- `archive_quota` gives each account's effective limits and gates; admins (`admin_role_snapshot`) are unlimited. Gates: `max_phones` on `/pair`, `replies` on `/computers` and `/outbox`, `autofill` on `/auth/browser`, all answering 402. `webhooks` is reported for hosted webhooks when they are built.
+- API throttle (`throttle` in `hosted/src/main.rs`): counts requests made with computer tokens per account in 30-minute windows, with `x-ratelimit-*` headers and 429 plus `Retry-After`. The signed-in inbox, phone uploads and the Mac relay's claim and result calls are not counted.
+- `GET /free/v1/plans` is public and cached (five minutes in memory and `Cache-Control: public, max-age=300`); papamo.dev/sms renders it with five-minute revalidation. Admins edit plans in the inbox (Account → Edit plans), through `GET/PUT /free/v1/admin/plans[/{id}]`; saving clears the server cache and revalidates /sms. The runtime role can update only the editable plan columns.
+
+### macOS installer
+
+`packaging/macos/build-dmg.sh` builds `psms-macos-arm64.dmg` with pSMS.app (launcher `Contents/MacOS/launch` runs `psms desktop`; the CLI is inside as `psms`). It is ad-hoc signed, not notarized, so the first open needs right-click → Open or System Settings → Open Anyway. Name nothing in `Contents/MacOS` `pSMS`: the file system is case-insensitive and it would replace `psms`. CI builds it on the macOS runner and the release attaches it; the tar.gz stays available.
+
 ### Reply from anywhere
 
 The goal: sign in from any computer, reply, and the Mac at home sends it through Messages while it is on. It works the same for papamo.dev accounts and self-hosted servers behind Cloudflare Tunnel, ngrok or similar.
