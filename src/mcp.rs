@@ -458,6 +458,22 @@ impl Inbox {
         Ok(json!({"saved": path, "bytes": bytes.len()}).to_string())
     }
     #[tool(
+        description = "Check whether the user's iPhone is still sending texts to pSMS: its last text, daily check-in, any text pSMS for Mac saw that the phone never sent, and a warning with how to fix it when iOS seems to have turned the automation off."
+    )]
+    async fn phone_health(&self) -> Result<String, String> {
+        let mut health = self.get("/health", &[]).await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        health["summary"] = json!(crate::health_rules::summary(&health, now));
+        health["warning"] = json!(
+            crate::health_rules::warning(&health, now)
+                .map(|(title, detail)| json!({"title": title, "detail": detail}))
+        );
+        Ok(health.to_string())
+    }
+    #[tool(
         description = "Show whether this self-hosted archive is connected to papamo.dev Plus, when it last synced, and how many messages it backed up and received."
     )]
     async fn cloud_status(&self) -> Result<String, String> {

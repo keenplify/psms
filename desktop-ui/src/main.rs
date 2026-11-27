@@ -9,6 +9,7 @@ mod cards;
 mod connect;
 #[path = "../../src/device_api.rs"]
 mod device_api;
+mod health;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
 mod hosted_login;
@@ -128,6 +129,9 @@ struct Dashboard {
     /// Photos from Messages, opened once and kept for this session; `None` while loading
     /// or when one could not be opened.
     photos: std::cell::RefCell<Photos>,
+    /// The inbox's `/health`: whether the iPhone is still sending, and a warning closed for now.
+    phone_health: Option<serde_json::Value>,
+    health_closed: bool,
     /// Why matching Mac Contacts last failed, shown in Settings.
     contacts_error: Option<String>,
     /// Why copying from Messages last failed, shown in Settings.
@@ -1637,6 +1641,9 @@ impl Dashboard {
         if self.show_upsell() {
             pane = pane.child(self.upsell_banner(cx));
         }
+        if let Some(banner) = self.health_banner(cx) {
+            pane = pane.child(banner);
+        }
         if self.composing {
             return pane
                 .child(
@@ -2461,6 +2468,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         })
                         .detach();
+                        // Whether the iPhone is still sending, every ten minutes.
+                        cx.spawn(async move |this, cx| {
+                            loop {
+                                let source = this.read_with(cx, |s, _| s.files_source().map(|(i, _)| i));
+                                let Ok(source) = source else { break };
+                                if let Some(inbox) = source {
+                                    let health = cx
+                                        .background_executor()
+                                        .spawn(async move { inbox.call(reqwest::Method::GET, "/health", None).ok() })
+                                        .await;
+                                    if this
+                                        .update(cx, |s, cx| {
+                                            if health.is_some() {
+                                                s.phone_health = health;
+                                                cx.notify();
+                                            }
+                                        })
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                cx.background_executor().timer(Duration::from_secs(600)).await;
+                            }
+                        })
+                        .detach();
                         cx.spawn(async move |this,cx|{
                             loop {
                                 if this.update(cx,|s,cx|s.check_updates(cx)).is_err(){break}
@@ -2552,7 +2585,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .background_executor()
                                         .spawn(async move {
                                             let db = Connection::open(&settings).map_err(|_| "Could not open settings.".to_string())?;
-                                            mac_messages::sync(&db, &key, &inbox)
+                                            let stored = mac_messages::sync(&db, &key, &inbox)?;
+                                            // Texts that reached this Mac but not pSMS: the iPhone automation may be off.
+                                            if mac_messages::check_capture(&db, &key, &inbox).unwrap_or(0) > 0 {
+                                                otp::alert(
+                                                    "capture-missed",
+                                                    "Your iPhone stopped sending texts to pSMS",
+                                                    "A text reached this Mac but not pSMS. On your iPhone, open Shortcuts → Automation and turn pSMS Capture back on, set to Run Immediately.",
+                                                );
+                                            }
+                                            Ok::<_, String>(stored)
                                         })
                                         .await;
                                     if this
@@ -2672,6 +2714,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             alert_seen: Default::default(),
                             messages_error: None,
                             contacts_error: None,
+                            phone_health: None,
+                            health_closed: false,
                             photos: Default::default(),
                             alert_source: None,
                             contacts_full_at: None,

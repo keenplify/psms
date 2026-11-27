@@ -195,6 +195,10 @@ pub fn group(
         let locked = content.is_none();
         let (sender, text, outgoing) =
             content.unwrap_or_else(|| ("Encrypted message".into(), r.body.clone(), false));
+        // Setup checks prove the Shortcut works; they count toward phone health, not as a chat.
+        if sender == "pSMS setup" || sender == "pSMS probe" {
+            continue;
+        }
         // Group chats get their own thread; one-to-one texts stay with the person, so copies
         // from Messages and from the iPhone Shortcut share one conversation.
         let chat = extra["thread"]

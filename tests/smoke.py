@@ -138,6 +138,19 @@ class ArchiveTest(unittest.TestCase):
                 self.assertEqual(self.request("PUT","/messages/"+third["id"]+"/attachments/1",owner,{"envelope":big})[0],204)
                 self.assertEqual(self.request("DELETE","/messages/"+third["id"],owner)[0],204)
                 self.assertEqual(self.request("GET",photo,owner)[0],404)
+                # Phone health: when the phone last sent, checked in, or missed a text the Mac saw.
+                health=self.request("GET","/health",owner)[1]
+                self.assertIsNotNone(health["phones"][0]["last_message_at"])
+                self.assertIsNone(health["phones"][0]["checked_in_at"])
+                self.assertEqual(self.request("POST","/checkin",owner)[0],401)
+                self.assertEqual(self.request("POST","/checkin",upload)[0],204)
+                self.assertEqual(self.request("GET","/health",upload)[0],401)
+                self.assertEqual(self.request("POST","/health/missed",upload)[0],401)
+                self.assertEqual(self.request("POST","/health/missed",owner)[0],204)
+                health=self.request("GET","/health",owner)[1]
+                self.assertIsNotNone(health["phones"][0]["checked_in_at"])
+                self.assertIsNotNone(health["missed_at"])
+                self.assertGreater(health["recent_messages_7d"],0)
                 # Chats and reactions: sealed, linked by opaque IDs, and listed with their messages.
                 chat="c"*32
                 self.assertEqual(self.request("PUT","/chats/"+chat,upload,{"envelope":sealed})[0],204)

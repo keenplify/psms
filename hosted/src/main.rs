@@ -746,6 +746,76 @@ async fn list(State(a): State<App>, h: HeaderMap, Query(page): Query<Page>) -> R
         json!({"next_offset":(rows.len()>limit as usize).then_some(offset+limit),"messages":messages}),
     ))
 }
+/// A phone's daily check-in (pSMS Check-in on a Time of Day automation), with its upload token.
+async fn checkin(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failure> {
+    let digest = bearer(&h)?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let found = db
+        .execute(
+            "UPDATE sessions SET checked_in_at=now() WHERE digest=$1 AND scope='upload' AND expires_at>now()",
+            &[&digest],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    if found == 0 {
+        return Err(DENIED);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+/// pSMS for Mac saw a text in Messages that the phone never sent.
+async fn missed(State(a): State<App>, h: HeaderMap) -> Result<StatusCode, Failure> {
+    let user = identity(&a, &h, false).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    db.execute(
+        "INSERT INTO capture_health(account_id,missed_at) VALUES($1,now())
+         ON CONFLICT(account_id) DO UPDATE SET missed_at=now()",
+        &[&user],
+    )
+    .await
+    .map_err(|_| DOWN)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+/// Is each phone still sending: its last text and check-in, recent volume, and the last text
+/// pSMS for Mac saw that no phone sent.
+async fn health(State(a): State<App>, h: HeaderMap) -> Reply {
+    let user = identity(&a, &h, false).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let phones = db
+        .query(
+            "SELECT substr(encode(digest,'hex'),1,16), floor(extract(epoch FROM last_used_at))::bigint,
+                    floor(extract(epoch FROM checked_in_at))::bigint
+             FROM sessions WHERE account_id=$1 AND scope='upload' AND expires_at>now()
+             ORDER BY last_used_at DESC NULLS LAST LIMIT 50",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?;
+    let recent: i64 = db
+        .query_one(
+            "SELECT count(*) FROM archived_messages WHERE account_id=$1 AND received_at > now() - interval '7 days'",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .get(0);
+    let missed: Option<i64> = db
+        .query_opt(
+            "SELECT floor(extract(epoch FROM missed_at))::bigint FROM capture_health WHERE account_id=$1",
+            &[&user],
+        )
+        .await
+        .map_err(|_| DOWN)?
+        .and_then(|r| r.get(0));
+    Ok(Json(json!({
+        "phones": phones.iter().map(|r| json!({
+            "id": r.get::<_, String>(0),
+            "last_message_at": r.get::<_, Option<i64>>(1),
+            "checked_in_at": r.get::<_, Option<i64>>(2),
+        })).collect::<Vec<_>>(),
+        "recent_messages_7d": recent,
+        "missed_at": missed,
+    })))
+}
 // Phone upload tokens for Settings. A token is identified by the start of its digest, never the token.
 async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
     let user = identity(&a, &h, false).await?;
@@ -755,7 +825,8 @@ async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
             "SELECT substr(encode(digest,'hex'),1,16),
                     floor(extract(epoch FROM expires_at - interval '1 year'))::bigint,
                     floor(extract(epoch FROM used_at))::bigint,
-                    floor(extract(epoch FROM last_used_at))::bigint, scope
+                    floor(extract(epoch FROM last_used_at))::bigint, scope,
+                    floor(extract(epoch FROM checked_in_at))::bigint
              FROM sessions WHERE account_id=$1 AND scope IN ('upload','computer') AND expires_at>now()
              ORDER BY last_used_at DESC NULLS LAST, expires_at DESC LIMIT 50",
             &[&user],
@@ -768,6 +839,7 @@ async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
         "first_message_at": r.get::<_, Option<i64>>(2),
         "last_message_at": r.get::<_, Option<i64>>(3),
         "kind": if r.get::<_, String>(4) == "computer" { "computer" } else { "phone" },
+        "checked_in_at": r.get::<_, Option<i64>>(5),
     })).collect::<Vec<_>>()})))
 }
 async fn remove_phone(
@@ -949,6 +1021,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/pair/seen", get(seen).post(mark_seen))
         .route("/pair/ready", post(mark_ready))
         .route("/phones", get(phones))
+        .route("/checkin", post(checkin))
+        .route("/health", get(health))
+        .route("/health/missed", post(missed))
         .route("/phones/{id}", delete(remove_phone))
         .route("/messages", get(list).post(store))
         .route("/messages/read", post(mark_read))

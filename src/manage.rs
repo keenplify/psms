@@ -11,6 +11,9 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Subcommand)]
 pub enum Action {
+    /// Whether the phone is still sending: its last text, daily check-in, and any text the Mac
+    /// saw that the phone never sent, with a warning when something looks wrong.
+    Health,
     /// Create, rotate, inspect or revoke scoped bearer tokens.
     Access {
         #[command(subcommand)]
@@ -651,6 +654,18 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                     "key": app_tokens::status(&db, "send")?,
                 })
             );
+        }
+        Action::Health => {
+            let mut health = api(path, opts, "/health", None).await?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs() as i64;
+            health["summary"] = json!(crate::health_rules::summary(&health, now));
+            health["warning"] = json!(
+                crate::health_rules::warning(&health, now)
+                    .map(|(title, detail)| json!({"title": title, "detail": detail}))
+            );
+            println!("{health}");
         }
         Action::Outbox { command } => {
             let reply = match command {

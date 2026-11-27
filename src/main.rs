@@ -22,6 +22,10 @@ mod cloud;
 mod cloudflare;
 mod contacts;
 mod daemon;
+mod health;
+#[path = "../desktop-ui/src/health.rs"]
+#[allow(dead_code)]
+pub(crate) mod health_rules;
 use clap::Parser;
 mod decrypt;
 mod desktop;
@@ -137,7 +141,8 @@ async fn receive(
         .get("authorization")
         .map(|value| value.as_bytes())
         .unwrap_or_default();
-    if !bool::from(archive.credential.as_bytes().ct_eq(provided)) && !archive.is_owner(&headers) {
+    let from_phone = bool::from(archive.credential.as_bytes().ct_eq(provided));
+    if !from_phone && !archive.is_owner(&headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if !encryption::accepts(&message.sender, &message.body) {
@@ -176,6 +181,19 @@ async fn receive(
     };
     if status == StatusCode::CREATED {
         arrivals.send_replace(());
+    }
+    // The phone is still sending: what health checks look for.
+    if from_phone
+        && matches!(status, StatusCode::CREATED | StatusCode::OK)
+        && local.remote.is_none()
+    {
+        let health = local.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(db) = health.db.lock() {
+                health::uploaded(&db);
+            }
+        })
+        .await;
     }
     // Ask the phone for a contact card when this archive has none, or only a stale one.
     if matches!(status, StatusCode::CREATED | StatusCode::OK) && local.remote.is_none() {
@@ -447,6 +465,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     db.execute_batch(cards::SCHEMA)?;
     db.execute_batch(attachments::SCHEMA)?;
     db.execute_batch(chats::SCHEMA)?;
+    db.execute_batch(health::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
     outbox::migrate(&db)?;
     db.execute_batch(device_api::SCHEMA)?;
@@ -534,6 +553,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .merge(cards::routes(&prefix, archive.clone()))
         .merge(attachments::routes(&prefix, archive.clone()))
         .merge(chats::routes(&prefix, archive.clone()))
+        .merge(health::routes(&prefix, archive.clone()))
         .merge(outbox::routes(&prefix, archive.clone()))
         .merge(cloud::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))

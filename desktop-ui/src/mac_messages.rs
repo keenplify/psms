@@ -28,7 +28,10 @@ pub enum Mode {
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS desktop_mac_messages(id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL, last_rowid INTEGER NOT NULL, copied INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS desktop_mac_chats(chat_id TEXT PRIMARY KEY, digest TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS desktop_mac_edits(id INTEGER PRIMARY KEY CHECK(id=1), after INTEGER NOT NULL)";
+CREATE TABLE IF NOT EXISTS desktop_mac_edits(id INTEGER PRIMARY KEY CHECK(id=1), after INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS desktop_capture_watch(guid TEXT PRIMARY KEY, party TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, reported INTEGER NOT NULL DEFAULT 0)";
+/// How long the iPhone Shortcut gets to send a text the Mac already has before pSMS warns.
+pub const CAPTURE_GRACE_SECS: i64 = 600;
 /// The largest file copied, before sealing; larger ones are listed but not copied.
 pub const MAX_FILE: usize = 1_500_000;
 /// Wait this long after a text arrives, so the iPhone Shortcut's copy is in first.
@@ -374,6 +377,97 @@ fn copy_changes(
         .map_err(|e| e.to_string())?;
     Ok(stored)
 }
+/// Texts the Mac saw that the iPhone Shortcut hasn't sent after the grace period. Each is
+/// reported once; returns how many were newly missed. Only inboxes a phone sends to are
+/// checked, so a Mac-only setup never warns.
+pub fn check_capture(db: &Connection, key: &str, inbox: &Inbox) -> Result<usize, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let waiting: i64 = db
+        .query_row(
+            "SELECT count(*) FROM desktop_capture_watch WHERE NOT resolved AND NOT reported AND at > ?1",
+            [now - 86_400],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if waiting == 0 {
+        return Ok(0);
+    }
+    let health = inbox.call(reqwest::Method::GET, "/health", None)?;
+    let has_phone = health["phones"]
+        .as_array()
+        .is_some_and(|p| p.iter().any(|p| !p["last_message_at"].is_null()));
+    if !has_phone {
+        let _ = db.execute(
+            "UPDATE desktop_capture_watch SET resolved=1 WHERE NOT resolved",
+            [],
+        );
+        return Ok(0);
+    }
+    let recent: Vec<(String, Value, i64)> =
+        inbox.call(reqwest::Method::GET, "/messages?limit=60", None)?["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| {
+                Some((
+                    m["id"].as_str()?.to_string(),
+                    open_json(key, m["body"].as_str()?)?,
+                    m["received_at"].as_i64().or(m["archived_at"].as_i64())?,
+                ))
+            })
+            .collect();
+    let watched: Vec<(String, String, String, i64)> = db
+        .prepare("SELECT guid,party,text,at FROM desktop_capture_watch WHERE NOT resolved AND NOT reported AND at > ?1")
+        .and_then(|mut stmt| {
+            stmt.query_map([now - 86_400], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect()
+        })
+        .map_err(|e| e.to_string())?;
+    let mut missed = 0;
+    for (guid, party, text, at) in watched {
+        let probe = Item {
+            rowid: 0,
+            guid: guid.clone(),
+            text,
+            from_me: false,
+            sender: party.clone(),
+            at,
+            service: String::new(),
+            chat_guid: String::new(),
+            chat_identifier: party,
+            chat_name: String::new(),
+            group: false,
+            members: vec![],
+            files: vec![],
+            reaction: None,
+            reply_to: None,
+        };
+        if duplicate(&recent, &probe).is_some() {
+            let _ = db.execute(
+                "UPDATE desktop_capture_watch SET resolved=1 WHERE guid=?1",
+                [&guid],
+            );
+        } else if now - at > CAPTURE_GRACE_SECS {
+            let _ = db.execute(
+                "UPDATE desktop_capture_watch SET reported=1 WHERE guid=?1",
+                [&guid],
+            );
+            missed += 1;
+        }
+    }
+    let _ = db.execute(
+        "DELETE FROM desktop_capture_watch WHERE at < ?1",
+        [now - 7 * 86_400],
+    );
+    if missed > 0 {
+        let _ = inbox.call(reqwest::Method::POST, "/health/missed", None);
+    }
+    Ok(missed)
+}
 /// Whether a mode copies this row.
 pub fn wanted(mode: Mode, item: &Item) -> bool {
     match mode {
@@ -681,6 +775,13 @@ pub fn sync(db: &Connection, key: &str, inbox: &Inbox) -> Result<usize, String> 
     for item in items {
         if now - item.at < SETTLE_SECS {
             break;
+        }
+        // Watch every incoming one-to-one text: the iPhone Shortcut should send it too.
+        if !item.from_me && !item.group && !item.text.is_empty() && item.reaction.is_none() {
+            let _ = db.execute(
+                "INSERT OR IGNORE INTO desktop_capture_watch(guid,party,text,at,resolved) VALUES(?1,?2,?3,?4,?5)",
+                params![item.guid, party(&item), item.text, item.at, duplicate(&recent, &item).is_some()],
+            );
         }
         if !wanted(mode, &item) {
             last = item.rowid;

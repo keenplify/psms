@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as root:
    if "id" in msg:return json.loads(p.stdout.readline())["result"]
   res=call(dict(id=1,method="initialize",params={"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}));assert "tools" in res["capabilities"]
   call(dict(method="notifications/initialized"))
-  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status","cloud_status","list_chats","save_attachment"}
+  tools=call(dict(id=2,method="tools/list"))["tools"];assert {t["name"] for t in tools}=={"search_messages","get_message","list_contacts","contact_history","update_message","set_contact","reset_contact","send_message","outbox_status","cloud_status","list_chats","save_attachment","phone_health"}
   def tool(id,name,arguments):
    res=call(dict(id=id,method="tools/call",params={"name":name,"arguments":arguments}))
    return json.loads(res["content"][0]["text"])
@@ -69,6 +69,8 @@ with tempfile.TemporaryDirectory() as root:
   assert found[0]["text"]=="Look at this one" and found[0]["edited"] is True and found[0]["reactions"]==[{"kind":"love","from":"me"}] and found[0]["attachments"][0]["name"]=="IMG_1.png" and found[0]["thread"]==chat
   saved=tool(24,"save_attachment",{"id":gid,"directory":root});assert Path(saved["saved"]).read_bytes()==b'"photo bytes"'
   assert json.loads(manage("inbox","chats","--key-file",str(kf)))["chats"][0]["members"]==["+15550142","+15550187"]
+  health=tool(25,"phone_health",{});assert "summary" in health and health["phones"][0]["id"]=="phone"
+  assert json.loads(manage("health"))["summary"]==health["summary"]
   out=Path(root)/"saved.bin";manage("inbox","save",gid,"--key-file",str(kf),"--out",str(out));assert out.read_bytes()==b'"photo bytes"'
   listed=json.loads(manage("inbox","list","--chat",chat,"--key-file",str(kf)))["messages"];assert listed[0]["body"]=="Look at this one" and listed[0]["reactions"][0]["kind"]=="love"
   # Devices-only send API: a send key from a private address queues texts, nothing else works.

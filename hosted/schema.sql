@@ -237,3 +237,11 @@ DO $$ BEGIN
     UPDATE sessions SET client='pSMS for Mac' WHERE scope='computer';
   END IF;
 END $$;
+-- Is the phone still sending? Its daily check-in, and when pSMS for Mac last saw a text in
+-- Messages that the phone never sent.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS checked_in_at timestamptz;
+CREATE TABLE IF NOT EXISTS capture_health (
+ account_id bigint PRIMARY KEY REFERENCES accounts ON DELETE CASCADE,
+ missed_at timestamptz
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON capture_health TO psms_runtime;

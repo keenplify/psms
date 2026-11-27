@@ -837,6 +837,75 @@ impl Dashboard {
                 )),
         )
     }
+    /// Seconds since 1970, for health times.
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default()
+    }
+    /// A warning over the inbox when the iPhone seems to have stopped sending.
+    pub(super) fn health_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.health_closed {
+            return None;
+        }
+        let (title, detail) = health::warning(self.phone_health.as_ref()?, Self::now())?;
+        Some(
+            div()
+                .h_flex()
+                .items_start()
+                .gap_3()
+                .px_5()
+                .py_3()
+                .bg(rgb(if self.dark { 0x3a2a12 } else { 0xfff4e0 }))
+                .border_b_1()
+                .border_color(rgb(if self.dark { 0x6b4b1a } else { 0xf0c987 }))
+                .child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+                        .child(div().text_sm().child(detail)),
+                )
+                .child(
+                    Button::new("health-help")
+                        .label("How to fix")
+                        .on_click(|_, _, cx| {
+                            cx.open_url("https://www.papamo.dev/docs/sms/phone-health")
+                        }),
+                )
+                .child(
+                    Button::new("health-close")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.health_closed = true;
+                            cx.notify()
+                        })),
+                ),
+        )
+    }
+    /// The iPhone's last text and daily check-in, from the inbox.
+    pub(super) fn phone_row(&self, cx: &mut Context<Self>) -> Div {
+        let detail = match &self.phone_health {
+            Some(h) => match health::warning(h, Self::now()) {
+                Some((title, _)) => title,
+                None => health::summary(h, Self::now()),
+            },
+            None => "Checking…".into(),
+        };
+        self.setting_row(
+            "iPhone",
+            detail,
+            Button::new("phone-health-help")
+                .label("Daily check-in")
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.open_url("https://www.papamo.dev/docs/sms/phone-health")
+                })),
+        )
+    }
     /// A notification for each new text while pSMS is open.
     pub(super) fn alerts_row(&self, cx: &mut Context<Self>) -> Div {
         let on = otp::alerts_enabled(&self.db);

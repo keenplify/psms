@@ -437,6 +437,9 @@ impl Dashboard {
         {
             messages.push(self.messages_row(cx).into_any_element());
         }
+        if keep("iphone phone health check-in automation shortcut stopped sending") {
+            messages.push(self.phone_row(cx).into_any_element());
+        }
         if keep("notifications alerts new texts messages sound banner") {
             messages.push(self.alerts_row(cx).into_any_element());
         }
