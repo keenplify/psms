@@ -2274,6 +2274,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         s.push(ext);
         PathBuf::from(s)
     };
+    // One pSMS window per archive. A second launch asks the running one to come forward
+    // (and open Settings if that's what was asked for), then quits.
+    let show_request = suffix(".window.show");
+    let instance = std::fs::File::create(suffix(".window.lock"))?;
+    if instance.try_lock().is_err() {
+        std::fs::write(
+            &show_request,
+            if settings { "settings" } else { "dashboard" },
+        )?;
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&show_request);
     let external = suffix(".storage.json").try_exists()?;
     let settings_path = if external {
         suffix(".settings.sqlite3")
@@ -2429,6 +2441,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .detach();
                         }
+                        // Another launch asked this window to come forward.
+                        let show = show_request.clone();
+                        cx.spawn_in(window, async move |this, cx| {
+                            loop {
+                                cx.background_executor().timer(Duration::from_millis(700)).await;
+                                let Ok(wanted) = std::fs::read_to_string(&show) else { continue };
+                                let _ = std::fs::remove_file(&show);
+                                let shown = this.update_in(cx, |s, window, cx| {
+                                    if wanted.trim() == "settings" {
+                                        s.show(Screen::Settings, cx);
+                                    }
+                                    window.activate_window();
+                                    cx.activate(true);
+                                });
+                                if shown.is_err() {
+                                    break;
+                                }
+                            }
+                        })
+                        .detach();
                         cx.spawn(async move |this,cx|{
                             loop {
                                 if this.update(cx,|s,cx|s.check_updates(cx)).is_err(){break}

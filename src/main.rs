@@ -384,10 +384,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 eprintln!("Could not activate the pending update: {e}");
             }
             daemon::init(&db_path, &cli.options)?;
-            native::launch(
-                &db_path,
-                matches!(cli.command, Some(cli::Command::Settings)),
-            )?;
+            let settings = matches!(cli.command, Some(cli::Command::Settings));
+            // In pSMS.app, the window takes over this process so the Dock shows one pSMS.
+            #[cfg(unix)]
+            if native::in_app_bundle() {
+                return Err(native::become_window(&db_path, settings).into());
+            }
+            native::launch(&db_path, settings)?;
             return Ok(());
         }
         Some(cli::Command::DaemonWorker) => Some(daemon::Worker::acquire(&db_path)?),

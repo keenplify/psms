@@ -12,7 +12,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin/psms" "$bin/psms-desktop" "$app/Contents/MacOS/"
 cat > "$app/Contents/MacOS/launch" <<'EOF'
 #!/bin/sh
-# Opens the pSMS window, starting the archive service in the background when needed.
+# Opens the pSMS window, starting the archive service in the background when needed. The
+# window then runs in this same process, so the Dock shows one pSMS. Opened at login, pSMS
+# installs a waiting update straight away.
+if [ "$1" = "--at-login" ]; then export PSMS_AT_LOGIN=1; fi
 exec "$(dirname "$0")/psms" desktop
 EOF
 chmod 755 "$app/Contents/MacOS/"*

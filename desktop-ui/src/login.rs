@@ -42,17 +42,32 @@ pub fn set(on: bool) -> Result<(), &'static str> {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
     };
+    // Open pSMS.app through macOS, so the login launch shows the app's own Dock icon; a build
+    // outside an app bundle runs directly.
+    let exe = app()?;
+    let program = match exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+    {
+        Some(bundle) => format!(
+            "<string>/usr/bin/open</string><string>-a</string><string>{}</string><string>--args</string><string>{ARG}</string>",
+            escape(&bundle.to_string_lossy())
+        ),
+        None => format!(
+            "<string>{}</string><string>{ARG}</string>",
+            escape(&exe.to_string_lossy())
+        ),
+    };
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>dev.papamo.psms</string>
-<key>ProgramArguments</key><array><string>{}</string><string>{ARG}</string></array>
+<key>ProgramArguments</key><array>{program}</array>
 <key>RunAtLoad</key><true/>
 <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
-"#,
-        escape(&app()?.to_string_lossy())
+"#
     );
     std::fs::create_dir_all(agent.parent().ok_or("Could not open LaunchAgents.")?)
         .and_then(|_| std::fs::write(&agent, plist))
