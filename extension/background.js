@@ -106,11 +106,10 @@ api.tabs.onUpdated.addListener(async (id, change, tab) => {
   try {
     const [response] = await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:async (deadline)=>{
       if(location.origin!=="https://www.papamo.dev" || location.pathname!=="/sms/inbox")return;
-      const status=document.getElementById("status");
       while(Date.now()<deadline) {
         const result=await window.connectPapamoAutofill?.();
         if(result?.state==="connected")return result;
-        if(result?.state==="needs-key" && status)status.textContent="Restore your archive from its backup, or complete phone setup to connect autofill.";
+        // The page asks for the recovery kit itself; keep waiting until it's chosen.
         await new Promise(resolve=>setTimeout(resolve,1200));
       }
     },args:[signin.expires]});
@@ -120,12 +119,10 @@ api.tabs.onUpdated.addListener(async (id, change, tab) => {
     await api.storage.local.set({server:hostedApi});
     await api.storage.session.set({pair:{key:result.key,token:result.token,server:hostedApi,username:result.username}});
     await api.storage.session.remove("signin");
-    await api.scripting.executeScript({target:{tabId:id},func:()=>{
-      if(location.origin==="https://www.papamo.dev" && location.pathname==="/sms/inbox"){
-        const status=document.getElementById("status");
-        if(status)status.textContent="Autofill connected. Open the extension on a sign-in site to enable it.";
-      }
-    }});
+    // Show the page's "Autofill is connected" confirmation.
+    await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:(username)=>{
+      if(location.origin==="https://www.papamo.dev" && location.pathname==="/sms/inbox")window.papamoAutofillConnected?.(username);
+    },args:[result.username??""]});
   } catch { /* A closed or navigated tab cancels the handoff. */ }
   finally { connecting.delete(id); }
 });
