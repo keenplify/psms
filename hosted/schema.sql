@@ -62,4 +62,15 @@ CREATE TABLE IF NOT EXISTS browser_access (
  expires_at timestamptz NOT NULL
 );
 GRANT SELECT,INSERT,UPDATE,DELETE ON browser_access TO psms_runtime;
+ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_scope_check;
+ALTER TABLE sessions ADD CONSTRAINT sessions_scope_check CHECK (scope IN ('owner','upload','computer'));
+-- Texts queued in an inbox for pSMS for Mac (or another sending device), sealed with the
+-- archive key. The envelope is dropped once the device reports the text sent.
+CREATE TABLE IF NOT EXISTS outbox (
+ id text NOT NULL, account_id bigint NOT NULL REFERENCES accounts ON DELETE CASCADE,
+ envelope text, status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sending','sent','failed')),
+ error text, created_at timestamptz NOT NULL DEFAULT now(), claimed_at timestamptz, finished_at timestamptz,
+ PRIMARY KEY (account_id, id)
+);
+GRANT SELECT,INSERT,UPDATE,DELETE ON outbox TO psms_runtime;
 COMMIT;

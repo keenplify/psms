@@ -1,4 +1,5 @@
 mod browser;
+mod outbox;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -24,15 +25,15 @@ macro_rules! env_name {
 #[path = "../../src/encryption.rs"]
 mod encryption;
 
-type Failure = StatusCode;
-type Reply = Result<Json<Value>, Failure>;
-const DOWN: Failure = StatusCode::SERVICE_UNAVAILABLE;
+pub(crate) type Failure = StatusCode;
+pub(crate) type Reply = Result<Json<Value>, Failure>;
+pub(crate) const DOWN: Failure = StatusCode::SERVICE_UNAVAILABLE;
 const DENIED: Failure = StatusCode::UNAUTHORIZED;
 
 #[derive(Clone)]
-struct App {
-    arrivals: tokio::sync::broadcast::Sender<Option<i64>>,
-    pool: Pool,
+pub(crate) struct App {
+    pub(crate) arrivals: tokio::sync::broadcast::Sender<Option<i64>>,
+    pub(crate) pool: Pool,
     exchange_key: String,
 }
 #[derive(Deserialize)]
@@ -57,9 +58,9 @@ fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
         .ok_or(DENIED)?;
     Ok(Sha256::digest(token.as_bytes()).to_vec())
 }
-async fn identity(app: &App, h: &HeaderMap, upload: bool) -> Result<i64, Failure> {
+pub(crate) async fn identity(app: &App, h: &HeaderMap, upload: bool) -> Result<i64, Failure> {
     let db = app.pool.get().await.map_err(|_| DOWN)?;
-    db.query_opt("SELECT account_id FROM sessions WHERE digest=$1 AND expires_at>now() AND (scope='owner' OR $2)",&[&bearer(h)?,&upload]).await.map_err(|_|DOWN)?.map(|r|r.get(0)).ok_or(DENIED)
+    db.query_opt("SELECT account_id FROM sessions WHERE digest=$1 AND expires_at>now() AND (scope IN ('owner','computer') OR $2)",&[&bearer(h)?,&upload]).await.map_err(|_|DOWN)?.map(|r|r.get(0)).ok_or(DENIED)
 }
 fn new_token() -> (String, Vec<u8>) {
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -113,6 +114,20 @@ async fn me(State(a): State<App>, h: HeaderMap) -> Reply {
     Ok(Json(
         json!({"username":row.get::<_,String>(0),"used":row.get::<_,i64>(1),"limit":row.get::<_,Option<i64>>(2)}),
     ))
+}
+/// A year-long token for a computer that serves this inbox, such as pSMS for Mac sending
+/// queued texts. It can do what a signed-in inbox can, and is listed and removed with phones.
+async fn computer(State(a): State<App>, h: HeaderMap) -> Reply {
+    let id = identity(&a, &h, false).await?;
+    let db = a.pool.get().await.map_err(|_| DOWN)?;
+    let (token, digest) = new_token();
+    db.execute(
+        "INSERT INTO sessions(digest,account_id,expires_at,scope) VALUES($1,$2,now()+interval '1 year','computer')",
+        &[&digest, &id],
+    )
+    .await
+    .map_err(|_| DOWN)?;
+    Ok(Json(json!({"token":token})))
 }
 async fn pair(State(a): State<App>, h: HeaderMap) -> Reply {
     let id = identity(&a, &h, false).await?;
@@ -344,8 +359,8 @@ async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
             "SELECT substr(encode(digest,'hex'),1,16),
                     floor(extract(epoch FROM expires_at - interval '1 year'))::bigint,
                     floor(extract(epoch FROM used_at))::bigint,
-                    floor(extract(epoch FROM last_used_at))::bigint
-             FROM sessions WHERE account_id=$1 AND scope='upload' AND expires_at>now()
+                    floor(extract(epoch FROM last_used_at))::bigint, scope
+             FROM sessions WHERE account_id=$1 AND scope IN ('upload','computer') AND expires_at>now()
              ORDER BY last_used_at DESC NULLS LAST, expires_at DESC LIMIT 50",
             &[&user],
         )
@@ -356,6 +371,7 @@ async fn phones(State(a): State<App>, h: HeaderMap) -> Reply {
         "connected_at": r.get::<_, i64>(1),
         "first_message_at": r.get::<_, Option<i64>>(2),
         "last_message_at": r.get::<_, Option<i64>>(3),
+        "kind": if r.get::<_, String>(4) == "computer" { "computer" } else { "phone" },
     })).collect::<Vec<_>>()})))
 }
 async fn remove_phone(
@@ -370,7 +386,7 @@ async fn remove_phone(
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     match db
         .execute(
-            "DELETE FROM sessions WHERE account_id=$1 AND scope='upload' AND substr(encode(digest,'hex'),1,16)=lower($2)",
+            "DELETE FROM sessions WHERE account_id=$1 AND scope IN ('upload','computer') AND substr(encode(digest,'hex'),1,16)=lower($2)",
             &[&user, &id],
         )
         .await
@@ -495,9 +511,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App {
         arrivals,
         pool,
-        exchange_key: std::fs::read_to_string("/etc/psms/hosted-db/identity-key")?
-            .trim()
-            .to_owned(),
+        exchange_key: std::fs::read_to_string(
+            std::env::var("PSMS_HOSTED_IDENTITY_KEY")
+                .unwrap_or_else(|_| "/etc/psms/hosted-db/identity-key".into()),
+        )?
+        .trim()
+        .to_owned(),
     };
     let api = Router::new()
         .route("/readyz", get(ready))
@@ -511,6 +530,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/otp/recent", get(browser::recent))
         .route("/otp/events", get(browser::events))
         .route("/pair", post(pair))
+        .route("/computers", post(computer))
+        .route("/outbox", get(outbox::list).post(outbox::queue))
+        .route("/outbox/claim", post(outbox::claim))
+        .route("/outbox/{id}", get(outbox::status).delete(outbox::cancel))
+        .route("/outbox/{id}/result", post(outbox::result))
         .route("/pair/seen", get(seen).post(mark_seen))
         .route("/pair/ready", post(mark_ready))
         .route("/phones", get(phones))
