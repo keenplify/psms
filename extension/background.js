@@ -4,19 +4,19 @@ const api = globalThis.browser ?? chrome;
 // manifest, so drop the old ones.
 api.runtime.onInstalled.addListener(() => {
   api.scripting.unregisterContentScripts().catch(() => {});
-  api.storage.local.remove(["sites","unboundSites"]).catch(() => {});
+  api.storage.local.remove(["sites","unboundSites","strictSites"]).catch(() => {});
 });
 async function authorizedPair(sender) {
   if (sender.frameId !== 0 || !sender.tab?.active || !sender.url) return null;
   const site = new URL(sender.url);
   if (site.protocol !== "https:" || !await api.permissions.contains({origins:[site.protocol+"//"+site.hostname+"/*"]})) return null;
   // On everywhere except the sites you turned it off for.
-  // Codes without an @site tag are offered too, unless you limited this site to tagged codes.
-  const {blockedSites=[],strictSites=[],server} = await api.storage.local.get(["blockedSites","strictSites","server"]);
+  // A code tagged for this site (@site #code) wins; otherwise any recent code is offered.
+  const {blockedSites=[],server} = await api.storage.local.get(["blockedSites","server"]);
   if (blockedSites.includes(site.origin) || !server) return null;
   const {pair} = await api.storage.session.get("pair");
   if (pair?.server !== server || !pair?.key || !pair?.token) return null;
-  return {site, server, pair, unbound: !strictSites.includes(site.origin)};
+  return {site, server, pair, unbound: true};
 }
 async function suggest(sender) {
   const allowed = await authorizedPair(sender);
@@ -55,7 +55,7 @@ api.runtime.onConnect.addListener(port => {
   };
   const changed = (changes, area) => {
     if ((area === "session" && changes.pair) ||
-        (area === "local" && (changes.blockedSites || changes.strictSites || changes.server))) controller.abort();
+        (area === "local" && (changes.blockedSites || changes.server))) controller.abort();
   };
   port.onDisconnect.addListener(() => controller.abort());
   api.storage.onChanged.addListener(changed);

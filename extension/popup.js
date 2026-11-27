@@ -23,7 +23,6 @@ el("mode").onclick=()=>{custom=false;status("");show(null)};
 el("self").onclick=()=>{custom=true;status("Enter the address and Browser autofill token from pSMS Settings, and your recovery words.");show(null)};
 let currentTab;
 let blockedSites=[];
-let strictSites=[];
 let everywhere=false;
 const tabOrigin=()=>currentTab?.url?.startsWith("https://")?new URL(currentTab.url).origin:"";
 // Autofill is on for every site unless you turn it off here.
@@ -32,19 +31,10 @@ function showSite(){
   const on=everywhere && origin && !blockedSites.includes(origin);
   el("enable").hidden=everywhere && !origin;
   el("enable").textContent=!everywhere?"Turn on autofill":on?"Turn off on this site":"Turn on for this site";
-  el("unbound-label").hidden=!on;
-  el("unbound").checked=strictSites.includes(origin);
 }
-el("unbound").onchange=async()=>{
-  const origin=tabOrigin();
-  strictSites=strictSites.filter(s=>s!==origin);
-  if(el("unbound").checked)strictSites.push(origin);
-  await api.storage.local.set({strictSites});
-  status(el("unbound").checked?"Only codes tagged for this site will be suggested.":"Any recent code can be suggested on this site.");
-};
 async function detect(){
-  const {server,blockedSites:blocked=[],strictSites:strict=[]}=await api.storage.local.get(["server","blockedSites","strictSites"]);
-  strictSites=strict; blockedSites=blocked;
+  const {server,blockedSites:blocked=[]}=await api.storage.local.get(["server","blockedSites"]);
+  blockedSites=blocked;
   if(server && server!==hosted){customServer=server;custom=true}
   const [tab]=await api.tabs.query({active:true,currentWindow:true});
   currentTab=tab;
