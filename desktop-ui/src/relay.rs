@@ -21,6 +21,9 @@ pub struct Relay {
     token: String,
     key: String,
 }
+/// The newest message time papamo.dev reported to the relay, so the inbox view refetches only
+/// when something arrived.
+pub static NEWEST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 pub struct Status {
     pub base: String,
     pub checked_at: Option<i64>,
@@ -173,6 +176,9 @@ impl Relay {
     /// Sends what is waiting, reports each result, and saves sent texts back to the inbox.
     pub fn run_once(&self, codes: Option<&mut Option<i64>>) -> Result<usize, String> {
         let batch = self.call(reqwest::Method::POST, "/outbox/claim", None)?;
+        if let Some(newest) = batch["newest"].as_i64() {
+            NEWEST.store(newest, std::sync::atomic::Ordering::Relaxed);
+        }
         if let (Some(seen), Some(newest)) = (codes, batch["newest"].as_i64()) {
             match *seen {
                 Some(before) if newest > before => self.announce_codes(before),
@@ -227,7 +233,57 @@ impl Relay {
     }
 }
 
+/// Reading and changing a papamo.dev inbox from the desktop, with the relay's computer token.
 impl Relay {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub fn is_hosted(&self) -> bool {
+        self.base == HOSTED
+    }
+    /// One page of sealed messages, newest first, with their contact cards.
+    pub fn page(&self, page: i64, size: i64) -> Result<(Value, Value), String> {
+        let messages = self.call(
+            reqwest::Method::GET,
+            &format!("/messages?limit={size}&offset={}", page * size),
+            None,
+        )?;
+        let cards = self
+            .call(reqwest::Method::GET, "/contacts/cards", None)
+            .unwrap_or(Value::Null);
+        Ok((messages, cards))
+    }
+    pub fn star(&self, id: &str, starred: bool) -> Result<(), String> {
+        self.call(
+            reqwest::Method::PATCH,
+            &format!("/messages/{id}"),
+            Some(json!({"starred": starred})),
+        )
+        .map(drop)
+    }
+    pub fn mark_read(&self, ids: &[String]) -> Result<(), String> {
+        self.call(
+            reqwest::Method::POST,
+            "/messages/read",
+            Some(json!({"ids": ids})),
+        )
+        .map(drop)
+    }
+    pub fn save_card(&self, contact: &str, envelope: Option<String>) -> Result<(), String> {
+        self.call(
+            reqwest::Method::PUT,
+            &format!("/contacts/{contact}/card"),
+            Some(json!({"envelope": envelope})),
+        )
+        .map(drop)
+    }
+    /// Keeps a reply sent from this Mac in the papamo.dev inbox, sealed and already read.
+    pub fn store_sent(&self, to: &str, text: &str) -> Result<(), String> {
+        let (id, request) =
+            replies::sent_copy(&self.key, to, text).ok_or("Could not seal the reply.")?;
+        self.call(reqwest::Method::POST, "/messages", Some(request))?;
+        self.mark_read(&[id])
+    }
     /// Announces one-time codes in texts newer than `after` (Unix seconds).
     fn announce_codes(&self, after: i64) {
         let Ok(page) = self.call(reqwest::Method::GET, "/messages?limit=5", None) else {
@@ -324,6 +380,10 @@ pub fn status(db: &Connection) -> Option<Status> {
     .ok()
     .flatten()
 }
+/// The relay, when it serves a papamo.dev inbox: the desktop then shows that inbox.
+pub fn hosted(db: &Connection) -> Option<Relay> {
+    load(db).filter(Relay::is_hosted)
+}
 fn load(db: &Connection) -> Option<Relay> {
     let base = status(db)?.base;
     let secret: Value = serde_json::from_str(&keychain_read(&account(&base))?).ok()?;
@@ -397,6 +457,14 @@ mod live {
         let (base, token) = config.split_once(' ').unwrap();
         let relay = Relay::check(base, token, &"0".repeat(32)).unwrap();
         assert_eq!(relay.run_once(None).unwrap(), 0);
+        let (page, cards) = relay.page(0, 40).unwrap();
+        let id = page["messages"][0]["id"].as_str().unwrap().to_string();
+        relay.star(&id, true).unwrap();
+        relay.mark_read(std::slice::from_ref(&id)).unwrap();
+        let (again, _) = relay.page(0, 40).unwrap();
+        assert_eq!(again["messages"][0]["starred"], true);
+        assert_eq!(again["messages"][0]["read"], true);
+        assert!(cards["cards"].is_array());
     }
 }
 

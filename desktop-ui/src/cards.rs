@@ -24,6 +24,7 @@ pub struct Card {
     pub note: String,
     pub photo: Option<(String, String)>,
 }
+#[derive(Clone)]
 pub struct Entry {
     pub card: Card,
     pub edited: bool,
@@ -153,10 +154,9 @@ pub fn preview(card: &Card) -> Option<Arc<Image>> {
 
 /// Decrypts every card this key can open, keyed by contact ID.
 pub fn load(db: &Connection, key: &str) -> HashMap<String, Entry> {
-    let mut out = HashMap::new();
     let Ok(mut stmt) = db.prepare("SELECT contact_id, phone_card, manual_card FROM contact_cards")
     else {
-        return out;
+        return HashMap::new();
     };
     let Ok(rows) = stmt.query_map([], |r| {
         Ok((
@@ -165,9 +165,31 @@ pub fn load(db: &Connection, key: &str) -> HashMap<String, Entry> {
             r.get::<_, Option<String>>(2)?,
         ))
     }) else {
-        return out;
+        return HashMap::new();
     };
-    for (id, phone, manual) in rows.flatten() {
+    open_all(rows.flatten(), key)
+}
+/// Cards from papamo.dev's `GET /contacts/cards`.
+pub fn from_hosted(cards: &Value, key: &str) -> HashMap<String, Entry> {
+    let rows = cards["cards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            Some((
+                c["contact_id"].as_str()?.to_string(),
+                c["phone_card"].as_str().map(String::from),
+                c["manual_card"].as_str().map(String::from),
+            ))
+        });
+    open_all(rows, key)
+}
+fn open_all(
+    rows: impl IntoIterator<Item = (String, Option<String>, Option<String>)>,
+    key: &str,
+) -> HashMap<String, Entry> {
+    let mut out = HashMap::new();
+    for (id, phone, manual) in rows {
         let phone = phone.and_then(|e| open(key, &e));
         let manual = manual.and_then(|e| open(key, &e));
         let Some(value) = manual.as_ref().or(phone.as_ref()) else {

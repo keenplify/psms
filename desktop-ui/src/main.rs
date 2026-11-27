@@ -79,6 +79,13 @@ struct Dashboard {
     relay_busy: bool,
     /// The newest message already checked for one-time codes.
     code_rowid: i64,
+    /// A papamo.dev inbox shown instead of the local archive, through the relay's connection.
+    hosted: Option<Arc<relay::Relay>>,
+    hosted_cards: std::collections::HashMap<String, cards::Entry>,
+    /// What the shown hosted page reflects: newest message time, page and star filter.
+    hosted_seen: Option<(i64, i64, bool)>,
+    /// A computer token from setup, waiting for the recovery words to open the hosted inbox.
+    pending_hosted: Option<String>,
     expiry: Option<u32>,
     hook_url: Entity<InputState>,
     hook_token: Entity<InputState>,
@@ -223,7 +230,7 @@ impl Dashboard {
 
     /// Announces one-time codes in texts that arrived since the last check.
     fn check_codes(&mut self) {
-        if self.external {
+        if self.external || self.hosted.is_some() {
             return;
         }
         let Some(key) = self.session_key.clone() else {
@@ -259,7 +266,7 @@ impl Dashboard {
     }
     fn refresh(&mut self) {
         self.check_codes();
-        let page = if self.external {
+        let page = if self.external || self.hosted.is_some() {
             let records = self
                 .external_page
                 .as_ref()
@@ -286,6 +293,7 @@ impl Dashboard {
                 self.threads = threads;
                 self.older = older;
                 self.cards = match (&self.session_key, self.external) {
+                    _ if self.hosted.is_some() => self.hosted_cards.clone(),
                     (Some(key), false) => cards::load(&self.db, key),
                     _ => Default::default(),
                 };
@@ -296,7 +304,10 @@ impl Dashboard {
     }
     /// The open conversation counts as read once its messages can be read.
     fn mark_selected_read(&mut self) {
-        if self.external || self.session_key.is_none() || self.screen != Screen::Inbox {
+        if (self.external && self.hosted.is_none())
+            || self.session_key.is_none()
+            || self.screen != Screen::Inbox
+        {
             return;
         }
         let Some(thread) = self
@@ -315,8 +326,11 @@ impl Dashboard {
         if unread.is_empty() {
             return;
         }
-        let Some(api) = self.api() else { return };
-        if api.mark_read(&unread).is_ok()
+        let marked = match &self.hosted {
+            Some(hosted) => hosted.mark_read(&unread).is_ok(),
+            None => self.api().is_some_and(|api| api.mark_read(&unread).is_ok()),
+        };
+        if marked
             && let Some(thread) = self
                 .threads
                 .iter_mut()
@@ -730,6 +744,14 @@ impl Dashboard {
         });
         let saved = match (cards::envelope(&key, card.as_ref()), self.api()) {
             (Err(e), _) => Err(e),
+            (Ok(envelope), _) if self.hosted.is_some() => {
+                self.hosted_seen = None;
+                self.hosted
+                    .as_ref()
+                    .map(|h| h.save_card(&contact, envelope))
+                    .unwrap_or(Ok(()))
+                    .map_err(|_| "Could not save this contact.")
+            }
             (Ok(_), None) => Err("Start the archive service to save contacts."),
             (Ok(envelope), Some(api)) => api
                 .save_card(&contact, envelope)
@@ -1120,6 +1142,43 @@ impl Dashboard {
         .detach();
     }
     fn use_key(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        // Finishing "Use my papamo.dev inbox": check the words against that inbox, then keep the
+        // connection in the Keychain like Reply from anywhere does.
+        if let Some(token) = self.pending_hosted.clone() {
+            self.notice = "Opening your papamo.dev inbox…".into();
+            cx.notify();
+            cx.spawn_in(window, async move |this, cx| {
+                let checked = cx
+                    .background_executor()
+                    .spawn(async move { relay::Relay::check(relay::HOSTED, &token, &key) })
+                    .await;
+                let _ = this.update_in(cx, |s, window, cx| {
+                    match checked.and_then(|r| relay::save(&s.db, &r).map(|_| r).map_err(String::from)) {
+                        Ok(r) => {
+                            s.pending_hosted = None;
+                            s.session_key = Some(r.key().to_string());
+                            s.hosted = Some(Arc::new(r));
+                            s.hosted_seen = None;
+                            s.key.update(cx, |i, cx| i.set_value("", window, cx));
+                            s.unlock_box = false;
+                            s.notice = "Your papamo.dev inbox is open here. Replies from this Mac go through Messages.".into();
+                        }
+                        Err(e) => s.notice = e,
+                    }
+                    cx.notify()
+                });
+            })
+            .detach();
+            return;
+        }
+        if self.hosted.is_some() {
+            self.session_key = Some(key);
+            self.key.update(cx, |i, cx| i.set_value("", window, cx));
+            self.unlock_box = false;
+            self.refresh();
+            cx.notify();
+            return;
+        }
         let valid=self.db.query_row("SELECT body FROM messages WHERE sender='papamo:encrypted:v1' ORDER BY rowid DESC LIMIT 1",[],|r|r.get::<_,String>(0));
         if valid.is_ok()
             && !self
@@ -1296,6 +1355,10 @@ impl Dashboard {
                                             .output()
                                         })
                                         .is_ok_and(|out| out.status.success())
+                                } else if let Some(hosted) = &s.hosted {
+                                    let done = hosted.star(&id, !starred).is_ok();
+                                    s.hosted_seen = None;
+                                    done
                                 } else {
                                     s.api().is_some_and(|api| api.star(&id, !starred).is_ok())
                                 }) {
@@ -1423,11 +1486,14 @@ impl Dashboard {
         if text.is_empty() || self.sending {
             return;
         }
-        let Some(api) = self.api() else {
+        // A papamo.dev inbox keeps the sent copy there; the local archive keeps it here.
+        let hosted = self.hosted.clone();
+        let api = self.api();
+        if hosted.is_none() && api.is_none() {
             self.notice = "Start the archive service to send replies.".into();
             cx.notify();
             return;
-        };
+        }
         self.sending = true;
         self.notice.clear();
         cx.notify();
@@ -1436,7 +1502,15 @@ impl Dashboard {
                 .background_executor()
                 .spawn(async move {
                     replies::send(&to, &text)?;
-                    replies::store(&api, &key, &to, &text).map_err(String::from)
+                    match (hosted, api) {
+                        (Some(h), _) => h.store_sent(&to, &text).map_err(|_| {
+                            "Sent, but could not save the reply in your inbox.".to_string()
+                        }),
+                        (None, Some(api)) => {
+                            replies::store(&api, &key, &to, &text).map_err(String::from)
+                        }
+                        (None, None) => Ok(()),
+                    }
                 })
                 .await;
             let _ = this.update_in(cx, |s, window, cx| {
@@ -1444,6 +1518,7 @@ impl Dashboard {
                 match sent {
                     Ok(()) => {
                         s.notice = "Sent.".into();
+                        s.hosted_seen = None;
                         s.reply.update(cx, |i, cx| i.set_value("", window, cx));
                         s.refresh();
                     }
@@ -1589,6 +1664,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // if storage selection was interrupted, including setups from older releases.
     let step = if step == 1 { 0 } else { step };
     let data_version = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+    // A papamo.dev inbox set up in Settings → Reply from anywhere is shown, already unlocked.
+    let hosted = (!external && !settings)
+        .then(|| relay::hosted(&db))
+        .flatten()
+        .map(Arc::new);
     // Only texts that arrive from now on are checked for one-time codes.
     let code_rowid: i64 = if external {
         0
@@ -1696,6 +1776,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }).detach();
                         cx.spawn(async move |this, cx| {
                             loop {
+                                // A papamo.dev inbox: fetch only when something arrived or the view changed.
+                                let hosted = this.read_with(cx, |s, _| {
+                                    s.hosted.clone().map(|h| (h, s.page, s.starred, s.hosted_seen))
+                                });
+                                let Ok(hosted) = hosted else { break };
+                                if let Some((h, page, starred, seen)) = hosted {
+                                    let newest = relay::NEWEST.load(std::sync::atomic::Ordering::Relaxed);
+                                    if seen != Some((newest, page, starred)) {
+                                        let fetch = h.clone();
+                                        let result = cx
+                                            .background_executor()
+                                            .spawn(async move { fetch.page(page, archive::LIMIT as i64) })
+                                            .await;
+                                        if this
+                                            .update(cx, |s, cx| {
+                                                match result {
+                                                    Ok((messages, cards)) => {
+                                                        let mut records = Vec::new();
+                                                        for r in messages["messages"].as_array().into_iter().flatten() {
+                                                            if starred && r["starred"] != true {
+                                                                continue;
+                                                            }
+                                                            let (Some(id), Some(sender), Some(body), Some(at)) = (
+                                                                r["id"].as_str(),
+                                                                r["sender"].as_str(),
+                                                                r["body"].as_str(),
+                                                                r["received_at"].as_i64(),
+                                                            ) else {
+                                                                continue;
+                                                            };
+                                                            let Some((time, when)) = archive::times(&s.db, at) else { continue };
+                                                            records.push((
+                                                                id.to_string(),
+                                                                sender.to_string(),
+                                                                body.to_string(),
+                                                                time,
+                                                                r["starred"] == true,
+                                                                r["contact_id"].as_str().map(String::from),
+                                                                r["read"] == true,
+                                                                when,
+                                                            ));
+                                                        }
+                                                        s.external_page = Some((page, starred, records));
+                                                        s.hosted_cards = cards::from_hosted(&cards, h.key());
+                                                        s.hosted_seen = Some((newest, page, starred));
+                                                    }
+                                                    Err(e) => {
+                                                        s.notice = e;
+                                                        s.hosted_seen = Some((newest, page, starred));
+                                                    }
+                                                }
+                                                s.refresh();
+                                                cx.notify();
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
                                 let Ok(params)=this.read_with(cx,|s,_|s.external.then(||(s.path.clone(),s.page,s.starred))) else {break};
                                 if let Some((path,page,starred))=params {
                                     let result=cx.background_executor().spawn(async move {
@@ -1780,8 +1920,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             relay_kit: None,
                             relay_busy: false,
                             code_rowid,
+                            session_key: hosted.as_ref().map(|h| h.key().to_string()),
+                            hosted,
+                            hosted_cards: Default::default(),
+                            hosted_seen: None,
+                            pending_hosted: None,
                             expiry: Some(30),
-                            session_key: None,
                             unlock_box: false,
                             notice: String::new(),
                             reached,

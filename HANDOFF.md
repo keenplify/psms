@@ -96,7 +96,7 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Browser autofill | Settings | Access tokens | `manage access` | — |
 | Scoped tokens, webhooks, sync timing | — (hosted has none) | Settings | `manage` | — |
 | Connected phones list | Settings | — (one upload token) | `manage access` | — |
-| Hosted archive | Yes | Gap: desktop opens self-hosted archives only | Gap | Gap |
+| Hosted archive | Yes | Yes: setup's "Use my papamo.dev inbox" or Settings → Reply from anywhere; reads, stars, read status, cards and replies through the relay's computer token, refetching when the outbox claim reports a newer message | Gap | Gap |
 | Reply from a conversation | Yes: sealed in the browser, queued for pSMS for Mac | Yes on Mac, through Messages | `outbox send` | `send_message` |
 | Reply from anywhere (Mac at home sends) | Queues; shows waiting, sending, failed | Settings → Reply from anywhere: papamo.dev or any self-hosted URL | `outbox send`, `status` (local archive) | `send_message`, `outbox_status` |
 | Connect a self-hosted archive to papamo.dev (Pro) | Reads and replies to the synced copy | Settings → papamo.dev Pro (connect, restore, disconnect) | `manage cloud connect/status/restore/disconnect` | `cloud_status` |
@@ -129,6 +129,10 @@ Pro (plan id `plus`, shown as Pro, 5,000 messages) and Enterprise (everything in
 - Team inboxes (hosted `src/teams.rs`): owners add members by account number; members send `x-psms-inbox: <owner id>` (the site proxy adds it from the inbox picked in Settings) and unlock with the owner's recovery words. Saved keys are kept per inbox in the browser.
 - Managed webhooks (hosted `src/webhooks.rs`): up to 10 HTTPS destinations; a database trigger queues `message.created` deliveries for plans with webhooks; every region's worker claims due deliveries with `SKIP LOCKED`, pins DNS to a public address (private, loopback, link-local, CGNAT and metadata addresses are refused), sends `{delivery_id, event, message_id}` with the destination's secret as a bearer token, and retries with backoff for 10 attempts. `GET /webhooks/deliveries` is the log; `POST …/{id}/replay` retries.
 - Reply from anywhere already works for any account: queued texts wait on papamo.dev until the Mac is back, and pSMS opens at login.
+
+### papamo.dev inbox on the desktop
+
+Desktop setup no longer makes its own hosted shortcut or key. "Use my papamo.dev inbox" checks `GET /phones`; with no phone it opens `papamo.dev/sms/inbox#connect`, which starts the web QR pairing with the account's key. It then gets a computer token and asks for the recovery words; `Relay::check` verifies them against the inbox and `relay::save` keeps the token and key in the Keychain. Whenever the relay points at papamo.dev, the desktop shows that inbox instead of the local archive, unlocked with the Keychain key (`desktop-ui/src/relay.rs` `page`, `star`, `mark_read`, `save_card`, `store_sent`). It refetches a page only when `newest` from the relay's outbox claim grows or the page or filter changes, so viewing barely uses the free plan's API calls.
 
 ### One-time codes on the desktop
 

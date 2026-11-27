@@ -289,21 +289,30 @@ impl Dashboard {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { hosted_login::has_phone(&token) })
+                .spawn(async move {
+                    let phone = hosted_login::has_phone(&token).map_err(String::from)?;
+                    let computer = crate::relay::computer_token(&token)?;
+                    Ok::<_, String>((phone, computer))
+                })
                 .await;
             let _ = this.update(cx, |s, cx| {
                 s.form.busy = false;
                 match result {
-                    Ok(true) => {
+                    Ok((phone, computer)) => {
+                        if !phone {
+                            cx.open_url("https://www.papamo.dev/sms/inbox#connect");
+                        }
                         s.finish(cx);
-                        s.notice = "Your phone already sends to papamo.dev, so no new shortcut is needed. Read your texts at papamo.dev/sms/inbox, and turn on Settings → Reply from anywhere to reply from this Mac.".into();
+                        s.pending_hosted = Some(computer);
+                        s.unlock_box = true;
+                        s.notice = if phone {
+                            "Your phone already sends to papamo.dev, so no new shortcut is needed. Enter your 12 recovery words or open your recovery kit to read your inbox here."
+                        } else {
+                            "Connect your iPhone in the browser tab that opened. Then enter your 12 recovery words or open your recovery kit here to read your inbox."
+                        }
+                        .into();
                     }
-                    Ok(false) => {
-                        cx.open_url("https://www.papamo.dev/sms/inbox#connect");
-                        s.finish(cx);
-                        s.notice = "Connect your iPhone in the browser tab that opened: scan the QR code and follow the steps there. Then turn on Settings → Reply from anywhere to reply from this Mac.".into();
-                    }
-                    Err(e) => s.notice = e.into(),
+                    Err(e) => s.notice = e,
                 }
                 cx.notify();
             });

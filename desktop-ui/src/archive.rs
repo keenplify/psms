@@ -26,6 +26,15 @@ pub struct Thread {
     pub contact: Option<String>,
     pub items: Vec<Mail>,
 }
+/// The full time and the Messages-style label for a Unix time, as the local archive shows them.
+pub fn times(db: &Connection, at: i64) -> Option<(String, String)> {
+    db.query_row(
+        "SELECT strftime('%Y-%m-%d %H:%M',?1,'unixepoch','localtime'), CASE WHEN date(?1,'unixepoch','localtime')=date('now','localtime') THEN ltrim(strftime('%I:%M %p',?1,'unixepoch','localtime'),'0')              WHEN date(?1,'unixepoch','localtime')=date('now','localtime','-1 day') THEN 'Yesterday'              WHEN date(?1,'unixepoch','localtime')>date('now','localtime','-7 days') THEN                CASE strftime('%w',?1,'unixepoch','localtime') WHEN '0' THEN 'Sunday' WHEN '1' THEN 'Monday' WHEN '2' THEN 'Tuesday' WHEN '3' THEN 'Wednesday' WHEN '4' THEN 'Thursday' WHEN '5' THEN 'Friday' ELSE 'Saturday' END              ELSE strftime('%m/%d/%y',?1,'unixepoch','localtime') END",
+        [at],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
+}
 pub fn read(
     db: &Connection,
     page: i64,
