@@ -268,6 +268,18 @@ impl Dashboard {
                 button("check-updates", "Check for updates")
                     .disabled(self.checking || self.updating)
                     .on_click(cx.listener(|s, _, _, cx| s.check_updates(cx))),
+            )
+            .child(div().mt_4().child(self.heading("Recovery kit")))
+            .child(self.caption(if self.session_key.is_some() {
+                "Save a fresh copy of the PDF with your 12 words. Keep it private."
+            } else {
+                "Unlock the archive to save your recovery kit again."
+            }))
+            .child(
+                Button::new("save-kit")
+                    .label("Save recovery kit (PDF)…")
+                    .disabled(self.session_key.is_none())
+                    .on_click(cx.listener(|s, _, _, cx| s.save_kit(cx))),
             );
         let mut card = div()
             .v_flex()

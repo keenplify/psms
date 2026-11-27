@@ -86,10 +86,10 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Read and unread status | Yes (hosted) | Yes (SQLite storage) | `inbox read`, `unread`, `list --unread` | `read` field and `unread` search filter |
 | New messages without refreshing | pushed | polls the local file | — | — |
 | Contact names and photos | Yes | Yes (SQLite storage) | `contact list`, `show` (photo reported, not shown) | contact cards on messages and contacts |
-| Edit contacts | Yes, with photo | Yes, no photo upload yet | `contact set`, `reset` | — (read-only server) |
+| Edit contacts | Yes, with photo | Yes, with photo | `contact set`, `reset` | — (read-only server) |
 | Labelled phone numbers and emails | Yes | Yes | `--phone label=value` | Yes |
 | Connect a phone | QR and setup page | self-hosted setup | `onboard` | — |
-| Recovery kit again | Settings | setup only | Gap | — |
+| Recovery kit again | Settings | Settings | `onboard` writes a fresh kit | — |
 | Appearance | Settings | Settings | `manage theme` | — |
 | Browser autofill | Settings | Access tokens | `manage access` | — |
 | Scoped tokens, webhooks, sync timing | — (hosted has none) | Settings | `manage` | — |

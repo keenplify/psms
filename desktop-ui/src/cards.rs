@@ -136,6 +136,21 @@ fn image(card: &Card) -> Option<Arc<Image>> {
     )))
 }
 
+/// Crops an image file to a 256px square JPEG for a contact photo, as base64.
+pub fn photo_from_file(path: &std::path::Path) -> Result<(String, String), &'static str> {
+    let image = image::open(path).map_err(|_| "Choose a JPEG or PNG image.")?;
+    let square = image.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3);
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .encode_image(&square.to_rgb8())
+        .map_err(|_| "Could not prepare that photo.")?;
+    Ok(("image/jpeg".into(), STANDARD.encode(jpeg)))
+}
+/// Rebuilds the on-screen image after a photo changes.
+pub fn preview(card: &Card) -> Option<Arc<Image>> {
+    image(card)
+}
+
 /// Decrypts every card this key can open, keyed by contact ID.
 pub fn load(db: &Connection, key: &str) -> HashMap<String, Entry> {
     let mut out = HashMap::new();
@@ -258,6 +273,20 @@ mod tests {
         save(&db, key, &id, None).unwrap();
         assert_eq!(load(&db, key)[&id].card.name, "Ana Reyes");
         assert!(load(&db, "f".repeat(32).as_str()).is_empty());
+
+        // Photos are cropped to a 256px square JPEG.
+        let png = std::env::temp_dir().join(format!("psms-photo-{}.png", std::process::id()));
+        image::RgbImage::from_pixel(640, 480, image::Rgb([74, 144, 226]))
+            .save(&png)
+            .unwrap();
+        let (kind, data) = photo_from_file(&png).unwrap();
+        std::fs::remove_file(&png).unwrap();
+        let jpeg = image::load_from_memory(&STANDARD.decode(data).unwrap()).unwrap();
+        assert_eq!(
+            (kind.as_str(), jpeg.width(), jpeg.height()),
+            ("image/jpeg", 256, 256)
+        );
+        assert!(photo_from_file(std::path::Path::new("/nonexistent.png")).is_err());
         let shortcut = parse(
             &json!({"fn": "Ana", "tel": "+1 555 0100\n+1 555 0101\n", "email": "a@example.com"}),
         );

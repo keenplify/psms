@@ -86,6 +86,8 @@ struct Dashboard {
     /// Label and value inputs for each phone number and email being edited.
     phone_rows: Vec<(Entity<InputState>, Entity<InputState>)>,
     email_rows: Vec<(Entity<InputState>, Entity<InputState>)>,
+    /// The photo being edited: None keeps the card's photo, Some(None) removes it.
+    card_photo: Option<Option<(String, String)>>,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
     let b = Button::new(id).label(label);
@@ -566,6 +568,7 @@ impl Dashboard {
         }
         self.phone_rows.clear();
         self.email_rows.clear();
+        self.card_photo = None;
         for item in &card.phones {
             self.add_row(true, item, window, cx);
         }
@@ -658,7 +661,10 @@ impl Dashboard {
                 phones: rows(&self.phone_rows, "mobile"),
                 emails: rows(&self.email_rows, "email"),
                 note: read(3),
-                photo: self.cards.get(&contact).and_then(|e| e.card.photo.clone()),
+                photo: match &self.card_photo {
+                    Some(choice) => choice.clone(),
+                    None => self.cards.get(&contact).and_then(|e| e.card.photo.clone()),
+                },
             }
         });
         match cards::save(&self.db, &key, &contact, card.as_ref()) {
@@ -675,6 +681,69 @@ impl Dashboard {
             Err(e) => self.notice = e.into(),
         }
         cx.notify();
+    }
+    fn choose_photo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose photo".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let photo = cx
+                .background_executor()
+                .spawn(async move { cards::photo_from_file(&path) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                match photo {
+                    Ok(photo) => s.card_photo = Some(Some(photo)),
+                    Err(e) => s.notice = e.into(),
+                }
+                cx.notify()
+            });
+        })
+        .detach();
+    }
+    /// Saves a fresh copy of the recovery kit while the archive is unlocked.
+    fn save_kit(&mut self, cx: &mut Context<Self>) {
+        let Some(entropy) = self.session_key.as_ref().and_then(|k| {
+            (k.len() == 32 && k.bytes().all(|b| b.is_ascii_hexdigit())).then(|| {
+                let mut out = [0u8; 16];
+                for (i, b) in out.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(&k[i * 2..i * 2 + 2], 16).unwrap_or_default();
+                }
+                out
+            })
+        }) else {
+            self.notice = "Unlock with your 12 words to save a recovery kit.".into();
+            cx.notify();
+            return;
+        };
+        let folder = dirs_downloads();
+        let target = cx.prompt_for_new_path(&folder, Some("pSMS-Recovery-Kit.pdf"));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = target.await else {
+                return;
+            };
+            let pdf = recovery::printable(&entropy, "this computer", None);
+            let saved = std::fs::write(&path, pdf).is_ok();
+            let _ = this.update(cx, |s, cx| {
+                s.notice = if saved {
+                    "Recovery kit saved. Keep it private."
+                } else {
+                    "Could not save the recovery kit."
+                }
+                .into();
+                cx.notify()
+            });
+        })
+        .detach();
     }
     fn contact_panel(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let thread = self
@@ -729,6 +798,49 @@ impl Dashboard {
                     }),
             );
         if self.card_editing {
+            let draft = cards::Card {
+                name: self.card_fields[0].read(cx).value().to_string(),
+                photo: match &self.card_photo {
+                    Some(choice) => choice.clone(),
+                    None => card.photo.clone(),
+                },
+                ..Default::default()
+            };
+            let preview = cards::Entry {
+                image: cards::preview(&draft),
+                card: draft,
+                edited: false,
+                from_phone: false,
+            };
+            panel = panel.child(
+                div()
+                    .v_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.avatar(Some(&preview), name.chars().take(1).collect(), 72., false))
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("photo-choose")
+                                    .ghost()
+                                    .label("Choose photo…")
+                                    .on_click(cx.listener(|s, _, w, cx| s.choose_photo(w, cx))),
+                            )
+                            .when(preview.card.photo.is_some(), |d| {
+                                d.child(
+                                    Button::new("photo-remove")
+                                        .ghost()
+                                        .label("Remove photo")
+                                        .on_click(cx.listener(|s, _, _, cx| {
+                                            s.card_photo = Some(None);
+                                            cx.notify()
+                                        })),
+                                )
+                            }),
+                    ),
+            );
             for (label, field) in ["Name", "Company", "Job title"]
                 .iter()
                 .zip(self.card_fields.iter())
@@ -1462,6 +1574,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             card_fields,
                             phone_rows: Vec::new(),
                             email_rows: Vec::new(),
+                            card_photo: None,
                         };
                         if s.screen==Screen::Setup && s.step==1 {s.detect_domain(window,cx);}
                         s.refresh();
@@ -1473,4 +1586,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cx.activate(true);
         });
     Ok(())
+}
+
+/// The user's Downloads folder, or their home folder when it can't be found.
+fn dirs_downloads() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let downloads = home.join("Downloads");
+    if downloads.is_dir() { downloads } else { home }
 }
