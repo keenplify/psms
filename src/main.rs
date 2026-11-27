@@ -207,6 +207,25 @@ fn contact_id(sender: &str, key: &str) -> String {
     )
 }
 
+/// True when pSMS was started by double-clicking it rather than from a terminal.
+#[cfg(windows)]
+fn opened_without_terminal() -> bool {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+    let mut ids = [0u32; 4];
+    // A console that only this process uses was created for it by Explorer. Close it so no
+    // empty window stays open behind the app.
+    let alone = unsafe { GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) } == 1;
+    if alone {
+        unsafe { FreeConsole() };
+    }
+    alone
+}
+#[cfg(not(windows))]
+fn opened_without_terminal() -> bool {
+    use std::io::IsTerminal;
+    !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     updater::dispatch()?;
@@ -306,10 +325,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or(preferred);
         return tunnel::run(provider, bind);
     }
-    #[cfg(windows)]
+    // Opened from Explorer, Finder or a desktop launcher rather than a terminal: show the app.
     if cli.command.is_none()
+        && opened_without_terminal()
         && std::env::current_exe()?
-            .with_file_name("psms-desktop.exe")
+            .with_file_name(format!("psms-desktop{}", std::env::consts::EXE_SUFFIX))
             .is_file()
     {
         cli.command = Some(cli::Command::Desktop);
