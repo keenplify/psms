@@ -1,12 +1,36 @@
 {
   "manifest_version": 3,
   "name": "pSMS Autofill",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Fill a verification code from your own encrypted pSMS inbox.",
-  "action": {"default_popup":"popup.html","default_title":"pSMS Autofill"},
-  "permissions":["activeTab","scripting","storage"],
-  "host_permissions":["http://127.0.0.1/*"],
-  "optional_host_permissions":["https://*/*"],
-  "background":{"service_worker":"background.js"},
-  "icons":{"128":"icon.png"}
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "pSMS Autofill"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "field.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
 }

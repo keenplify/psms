@@ -17,6 +17,7 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const REPO: &str = "https://github.com/keenplify/psms/releases/download";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
+const DISPATCHED: &str = "PSMS_DISPATCHED";
 
 #[derive(Args)]
 pub struct Options {
@@ -79,8 +80,59 @@ fn active(root: &Path) -> Result<Option<Version>> {
 fn executable(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
+/// Copies the active version into pSMS.app when this is the app's own launcher, so macOS
+/// treats the window as pSMS: its notifications with buttons, its Dock icon, and the
+/// permissions granted to it. Both programs are copied before either replaces the old one,
+/// then the app is signed again. Returns the app's updated CLI, or None to run the version
+/// from the updates folder instead (an app the user cannot write to, or another launch is
+/// already copying).
+#[cfg(target_os = "macos")]
+fn install_into_app(root: &Path, version: &Version) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    if macos.file_name()? != "MacOS"
+        || app.extension()? != "app"
+        || !contents.join("Info.plist").is_file()
+    {
+        return None;
+    }
+    let lock = fs::File::create(root.join("app.lock")).ok()?;
+    lock.try_lock().ok()?;
+    let from = root.join(version.to_string());
+    let names = ["psms", "psms-desktop"];
+    for name in names {
+        fs::copy(from.join(name), macos.join(format!(".{name}.new"))).ok()?;
+    }
+    for name in names {
+        fs::rename(macos.join(format!(".{name}.new")), macos.join(name)).ok()?;
+    }
+    let plist = contents.join("Info.plist");
+    for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
+        let _ = Command::new("/usr/bin/plutil")
+            .args(["-replace", key, "-string", &version.to_string()])
+            .arg(&plist)
+            .status();
+    }
+    // Each program keeps its own signature, so a failed re-sign still leaves both runnable.
+    let _ = Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(app)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    Some(macos.join("psms"))
+}
 /// All launchers select a complete version directory through one atomic pointer.
 pub fn dispatch() -> Result<()> {
+    // A launcher hands off once, so a mislabelled version cannot start itself forever.
+    if std::env::var_os(DISPATCHED).is_some() {
+        // Programs this one starts, such as a later update, still look for a newer version.
+        // SAFETY: called first thing in main, before any other thread starts.
+        unsafe { std::env::remove_var(DISPATCHED) };
+        return Ok(());
+    }
     let Ok(root) = root() else { return Ok(()) };
     let Some(v) = active(&root)? else {
         return Ok(());
@@ -88,8 +140,13 @@ pub fn dispatch() -> Result<()> {
     if v <= stable(CURRENT)? {
         return Ok(());
     }
-    let mut child = Command::new(root.join(v.to_string()).join(executable("psms")));
-    child.args(std::env::args_os().skip(1));
+    #[cfg(target_os = "macos")]
+    let program = install_into_app(&root, &v)
+        .unwrap_or_else(|| root.join(v.to_string()).join(executable("psms")));
+    #[cfg(not(target_os = "macos"))]
+    let program = root.join(v.to_string()).join(executable("psms"));
+    let mut child = Command::new(program);
+    child.args(std::env::args_os().skip(1)).env(DISPATCHED, "1");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

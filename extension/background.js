@@ -1,14 +1,22 @@
 if (typeof importScripts === "function") importScripts("match.js");
 const api = globalThis.browser ?? chrome;
+// 0.3 and earlier added a script per site you enabled; every site now gets one from the
+// manifest, so drop the old ones.
+api.runtime.onInstalled.addListener(() => {
+  api.scripting.unregisterContentScripts().catch(() => {});
+  api.storage.local.remove(["sites","unboundSites"]).catch(() => {});
+});
 async function authorizedPair(sender) {
   if (sender.frameId !== 0 || !sender.tab?.active || !sender.url) return null;
   const site = new URL(sender.url);
   if (site.protocol !== "https:" || !await api.permissions.contains({origins:[site.protocol+"//"+site.hostname+"/*"]})) return null;
-  const {sites=[],unboundSites=[],server} = await api.storage.local.get(["sites","unboundSites","server"]);
-  if (!sites.includes(site.origin) || !server) return null;
+  // On everywhere except the sites you turned it off for.
+  // Codes without an @site tag are offered too, unless you limited this site to tagged codes.
+  const {blockedSites=[],strictSites=[],server} = await api.storage.local.get(["blockedSites","strictSites","server"]);
+  if (blockedSites.includes(site.origin) || !server) return null;
   const {pair} = await api.storage.session.get("pair");
   if (pair?.server !== server || !pair?.key || !pair?.token) return null;
-  return {site, server, pair, unbound: unboundSites.includes(site.origin)};
+  return {site, server, pair, unbound: !strictSites.includes(site.origin)};
 }
 async function suggest(sender) {
   const allowed = await authorizedPair(sender);
@@ -47,7 +55,7 @@ api.runtime.onConnect.addListener(port => {
   };
   const changed = (changes, area) => {
     if ((area === "session" && changes.pair) ||
-        (area === "local" && (changes.sites || changes.unboundSites || changes.server))) controller.abort();
+        (area === "local" && (changes.blockedSites || changes.strictSites || changes.server))) controller.abort();
   };
   port.onDisconnect.addListener(() => controller.abort());
   api.storage.onChanged.addListener(changed);

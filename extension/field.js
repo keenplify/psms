@@ -7,10 +7,27 @@
     generation++; clearInterval(timer); clearTimeout(retry); clearTimeout(expiresTimer); stream?.disconnect(); stream=null;
     host?.remove(); host=null; field=null;
   }
+  const TEXTLIKE=["text","number","tel","password"];
+  // One box per digit: the 4-8 single-character boxes around this one.
+  function boxes(el){
+    if(!(el instanceof HTMLInputElement) || el.maxLength!==1 || !TEXTLIKE.includes(el.type)) return null;
+    let scope=el.parentElement;
+    for(let up=0; scope && up<4; up++, scope=scope.parentElement){
+      const group=[...scope.querySelectorAll("input")].filter(i=>i.maxLength===1 && TEXTLIKE.includes(i.type) && !i.disabled);
+      if(group.length>=4) return group.length<=8 ? group : null;
+    }
+    return null;
+  }
+  // A box asking for a texted code: marked as one (autocomplete="one-time-code"), labelled like
+  // one, a short numeric box, or a row of one-digit boxes. Promo, gift and postal codes are not.
   function eligible(el){
-    if (!(el instanceof HTMLInputElement) || el.disabled || el.readOnly || el.value || !["text","number","tel","password"].includes(el.type)) return false;
-    const label=[el.name,el.id,el.placeholder,el.getAttribute("aria-label"),...[...(el.labels??[])].map(l=>l.textContent)].join(" ");
-    return el.autocomplete.split(/\s+/).includes("one-time-code") || /\botp\b|one[-_ ]?time[-_ ]?(code|password)|verification[-_ ]?code|security[-_ ]?code/i.test(label);
+    if (!(el instanceof HTMLInputElement) || el.disabled || el.readOnly || el.value || !TEXTLIKE.includes(el.type)) return false;
+    if (el.autocomplete.split(/\s+/).includes("one-time-code")) return true;
+    const label=[el.name,el.id,el.placeholder,el.getAttribute("aria-label"),el.getAttribute("aria-labelledby")&&document.getElementById(el.getAttribute("aria-labelledby"))?.textContent,...[...(el.labels??[])].map(l=>l.textContent)].join(" ");
+    if (/promo|coupon|discount|gift|voucher|referral|invite|zip|postal|postcode|country|area|captcha|search|card|cvv|cvc/i.test(label)) return false;
+    if (boxes(el)) return true;
+    if (/\botp\b|one[-_ ]?time|verif\w*|security[-_ ]?code|auth\w*[-_ ]?code|passcode|\b2fa\b|\bmfa\b|\bpin\b|sms[-_ ]?code|\bcode\b/i.test(label)) return true;
+    return el.inputMode==="numeric" && el.maxLength>=4 && el.maxLength<=8;
   }
   function position(){
     if(!host || !field) return;
@@ -37,8 +54,14 @@
     button.onpointerdown=e=>e.preventDefault();
     button.onclick=e=>{
       if(!e.isTrusted || Date.now()>=data.expires || !el.isConnected || !eligible(el) || document.visibilityState!=="visible"){clear();return}
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(el,data.code);
-      el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new Event("change",{bubbles:true}));clear();
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+      const group=boxes(el);
+      const targets=group && group.length===data.code.length ? group.map((box,i)=>[box,data.code[i]]) : [[el,data.code]];
+      for(const [box,value] of targets){
+        set.call(box,value);
+        box.dispatchEvent(new Event("input",{bubbles:true}));box.dispatchEvent(new Event("change",{bubbles:true}));
+      }
+      clear();
     };
     root.append(button);document.documentElement.append(host);position();
     expiresTimer=setTimeout(clear,Math.max(0,data.expires-Date.now()));

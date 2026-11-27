@@ -5,7 +5,7 @@ function status(text){el("status").textContent=text}
 const hosted="https://na.sms.papamo.dev/free/v1";
 let customServer=local+"/v1";
 let custom=false;
-// Two states: connected (enable sites, disconnect), or not (one Sign in button). A self-hosted
+// Two states: connected (turn sites off, disconnect), or not (one Sign in button). A self-hosted
 // archive is a link away.
 function show(pair){
   const connected=!!pair;
@@ -22,31 +22,38 @@ function show(pair){
 el("mode").onclick=()=>{custom=false;status("");show(null)};
 el("self").onclick=()=>{custom=true;status("Enter the address and Browser autofill token from pSMS Settings, and your recovery words.");show(null)};
 let currentTab;
-let enabledSites=[];
-let unboundSites=[];
-function showUnbound(){
-  const origin=currentTab?.url?new URL(currentTab.url).origin:"";
-  el("unbound-label").hidden=!enabledSites.includes(origin);
-  el("unbound").checked=unboundSites.includes(origin);
+let blockedSites=[];
+let strictSites=[];
+let everywhere=false;
+const tabOrigin=()=>currentTab?.url?.startsWith("https://")?new URL(currentTab.url).origin:"";
+// Autofill is on for every site unless you turn it off here.
+function showSite(){
+  const origin=tabOrigin();
+  const on=everywhere && origin && !blockedSites.includes(origin);
+  el("enable").hidden=everywhere && !origin;
+  el("enable").textContent=!everywhere?"Turn on autofill":on?"Turn off on this site":"Turn on for this site";
+  el("unbound-label").hidden=!on;
+  el("unbound").checked=strictSites.includes(origin);
 }
 el("unbound").onchange=async()=>{
-  const origin=new URL(currentTab.url).origin;
-  unboundSites=unboundSites.filter(s=>s!==origin);
-  if(el("unbound").checked)unboundSites.push(origin);
-  await api.storage.local.set({unboundSites});
-  status(el("unbound").checked?"Untagged codes will be suggested on this site.":"Only codes tagged for this site will be suggested.");
+  const origin=tabOrigin();
+  strictSites=strictSites.filter(s=>s!==origin);
+  if(el("unbound").checked)strictSites.push(origin);
+  await api.storage.local.set({strictSites});
+  status(el("unbound").checked?"Only codes tagged for this site will be suggested.":"Any recent code can be suggested on this site.");
 };
 async function detect(){
-  const {server,sites=[],unboundSites:loose=[]}=await api.storage.local.get(["server","sites","unboundSites"]);
-  unboundSites=loose;
+  const {server,blockedSites:blocked=[],strictSites:strict=[]}=await api.storage.local.get(["server","blockedSites","strictSites"]);
+  strictSites=strict; blockedSites=blocked;
   if(server && server!==hosted){customServer=server;custom=true}
   const [tab]=await api.tabs.query({active:true,currentWindow:true});
-  currentTab=tab; enabledSites=sites;
-  if(tab?.url && sites.includes(new URL(tab.url).origin))el("enable").textContent="Disable on this site";
-  showUnbound();
+  currentTab=tab;
+  // Firefox asks for site access separately from installing.
+  everywhere=await api.permissions.contains({origins:["https://*/*"]});
+  showSite();
   const {pair}=await api.storage.session.get("pair");
   show(pair);
-  if(pair){status(tab?.url?.startsWith("https://")?"":"Open a sign-in page to enable autofill there.");return}
+  if(pair){status(everywhere?"Codes appear under verification code fields.":"Turn on autofill to fill codes on sign-in pages.");return}
   // pSMS running on this computer: the quickest way in, approved in the app.
   try{
     const r=await fetch(local+"/.well-known/psms",{redirect:"error",signal:AbortSignal.timeout(1200)});
@@ -87,28 +94,25 @@ el("connect").onclick=async()=>{
     const r=await fetch(server+"/otp/recent",{headers:{Authorization:"Bearer "+token},redirect:"error",credentials:"omit",cache:"no-store",signal:AbortSignal.timeout(5000)});
     if(!r.ok){status("Connection denied. Check the server and the Browser autofill token.");return}
     await api.storage.local.set({server});await api.storage.session.set({pair:{key,token,server}});
-    el("key").value=el("token").value="";show({server});status("Connected. Enable autofill on the sign-in site.");
+    el("key").value=el("token").value="";show({server});status("Connected. Codes appear under verification code fields.");
   }catch{status("Could not connect. Check the server address and try again.")}
 };
 el("lock").onclick=async()=>{await api.storage.session.remove(["pair","signin"]);show(null);status("Disconnected. Sign in again to use autofill.")};
 el("enable").onclick=async()=>{
   try{
-    const tab=currentTab;
-    const site=new URL(tab.url), origin=site.origin, pattern=site.protocol+"//"+site.hostname+"/*";
-    if(!origin.startsWith("https://")){status("Open an HTTPS sign-in page first.");return}
-    const sites=enabledSites;
-    const id="psms-"+Array.from(new TextEncoder().encode(origin),x=>x.toString(16).padStart(2,"0")).join("");
-    if(sites.includes(origin)){
-      enabledSites=sites.filter(s=>s!==origin);unboundSites=unboundSites.filter(s=>s!==origin);
-      await api.storage.local.set({sites:enabledSites,unboundSites});showUnbound();
-      await api.scripting.unregisterContentScripts({ids:[id]});el("enable").textContent="Enable on this site";status("Disabled on this site.");return
+    if(!everywhere){
+      if(!await api.permissions.request({origins:["https://*/*"]}))return;
+      everywhere=true;showSite();status("On. Codes appear under verification code fields.");return
     }
-    if(!await api.permissions.request({origins:[pattern]}))return;
-    await api.scripting.registerContentScripts([{id,matches:[pattern],js:["field.js"],allFrames:false}]);
-    enabledSites=[...sites,origin];await api.storage.local.set({sites:enabledSites});
-    await api.scripting.executeScript({target:{tabId:tab.id},files:["field.js"]});
-    el("enable").textContent="Disable on this site";showUnbound();status("Enabled. Focus a verification code field.");
-  }catch{status("Could not enable autofill here. Open a normal HTTPS tab and try again.")}
+    const origin=tabOrigin();
+    if(!origin)return;
+    const off=!blockedSites.includes(origin);
+    blockedSites=blockedSites.filter(s=>s!==origin);
+    if(off)blockedSites.push(origin);
+    await api.storage.local.set({blockedSites});
+    showSite();
+    status(off?"Off on this site.":"On for this site again.");
+  }catch{status("Could not change this site. Try again.")}
 };
 el("mode").disabled=el("server").disabled=el("connect").disabled=el("enable").disabled=true;
 detect().catch(()=>status("Open Settings in pSMS to connect.")).finally(()=>{
@@ -126,7 +130,7 @@ el("local").onclick=async()=>{
 // Connected (or refused) while the popup is open: show it straight away.
 api.storage.onChanged.addListener(async(changes,area)=>{
   if(area!=="session")return;
-  if(changes.pair?.newValue){show(changes.pair.newValue);status("Connected. Enable autofill on the sign-in site.")}
+  if(changes.pair?.newValue){show(changes.pair.newValue);status("Connected. Codes appear under verification code fields.")}
   const ask=changes.localAsk?.newValue;
   if(ask?.state==="denied")status("pSMS didn't allow it. Choose Connect again to retry.");
   if(ask?.state==="expired")status("No answer from pSMS. Choose Connect again.");
