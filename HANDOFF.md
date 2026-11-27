@@ -95,14 +95,25 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Scoped tokens, webhooks, sync timing | — (hosted has none) | Settings | `manage` | — |
 | Connected phones list | Settings | — (one upload token) | `manage access` | — |
 | Hosted archive | Yes | Gap: desktop opens self-hosted archives only | Gap | Gap |
-| Reply from a conversation | Gap: asks Mac users to install the app; hosted has no outbox yet | Yes on Mac, through Messages | `outbox send` | `send_message` |
-| Queue texts for another device | Gap (hosted outbox) | Delivers the queue while open on a Mac | `outbox send`, `status` | `send_message`, `outbox_status` |
+| Reply from a conversation | Yes: sealed in the browser, queued for pSMS for Mac | Yes on Mac, through Messages | `outbox send` | `send_message` |
+| Reply from anywhere (Mac at home sends) | Queues; shows waiting, sending, failed | Settings → Reply from anywhere: papamo.dev or any self-hosted URL | `outbox send`, `status` (local archive) | `send_message`, `outbox_status` |
+| Devices-only send API (LAN, Tailscale) | — (hosted) | Settings → Your devices, send key | `manage devices`, `access create send` | — (configuration) |
 
 ## Product scope
 
 Each recipient has a separate encrypted archive. Bundled SQLite is the default. Settings and first-run onboarding also support PostgreSQL, MySQL, MariaDB and SQL Server. The original SQLite file stays available for backup after migration. Verify the active destination with `psms storage status`.
 
 The desktop groups incoming messages into conversations and supports dark mode. On a Mac it replies through the Messages app with AppleScript, using Text Message Forwarding for SMS when the iPhone allows it, and saves each sent reply sealed in the archive through `POST /v1/messages`.
+
+### Reply from anywhere
+
+The goal: sign in from any computer, reply, and the Mac at home sends it through Messages while it is on. It works the same for papamo.dev accounts and self-hosted servers behind Cloudflare Tunnel, ngrok or similar.
+
+- Web inbox: seals `{to, body}` with the archive key and queues it (`outbox-send` → hosted `POST /free/v1/outbox {envelope}`). The server never sees the recipient or text. Pending replies show under the conversation and update live; the sent copy arrives through the normal push feed.
+- pSMS for Mac (`desktop-ui/src/relay.rs`): Settings → Reply from anywhere. For papamo.dev it signs in and gets a year-long `computer` session from `POST /free/v1/computers`; for self-hosted it takes the API URL and an owner or API token. The token and archive key live in the login Keychain (`dev.papamo.psms.relay`), so it keeps working after restarts. A background thread claims the outbox every 5 seconds, opens envelopes (or reads `to`/`body` from a self-hosted queue), sends through Messages, saves the sealed sent copy with `POST /messages`, marks it read and reports the result. Computers are listed and removed with phones on the web.
+- The Mac must stay awake with pSMS open. Texts wait in the outbox meanwhile; a claim returns to the queue after five minutes without a result.
+- Devices-only API (`src/device_api.rs`): `psms manage devices enable` or Settings → Your devices opens a second listener (default port 47840) that serves only `POST /v1/outbox` and `GET /v1/outbox/{id}`, accepts only `send`-scope keys and refuses peers outside private ranges (LAN, link-local, Tailscale 100.64.0.0/10, IPv6 ULA). It is plain HTTP, so use it on trusted networks or Tailscale.
+- Gaps: the CLI and MCP queue texts on the local archive only; they cannot yet target a hosted account. The relay needs macOS for Messages; an Android sender can use the same claim and result calls.
 
 ### Outbox
 

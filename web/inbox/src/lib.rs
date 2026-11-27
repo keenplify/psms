@@ -19,6 +19,12 @@ struct Line {
     body: String,
     #[serde(default)]
     starred: bool,
+    /// Sent from this archive: shown on the right in blue.
+    #[serde(default)]
+    outgoing: bool,
+    /// For replies still in the outbox, such as "Waiting for your Mac".
+    #[serde(default)]
+    status: String,
 }
 
 #[wasm_bindgen]
@@ -62,26 +68,40 @@ impl Render for Transcript {
                 );
             }
             // Clicking a bubble stars or unstars it; starred ones show a gold star.
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .mb_1()
-                    .child(
-                        div()
-                            .id(("bubble", index))
-                            .cursor_pointer()
-                            .max_w(if compact { px(280.) } else { px(560.) })
-                            .px_3()
-                            .py_2()
-                            .bg(rgb(bubble))
-                            .rounded(px(18.))
-                            .on_click(move |_, _, _| psms_star(index as u32))
-                            .child(line.body.clone()),
-                    )
-                    .when(line.starred, |d| d.child(div().text_sm().child("⭐"))),
-            );
+            let pending = !line.status.is_empty();
+            let row = div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .mb_1()
+                .when(line.outgoing, |d| d.flex_row_reverse())
+                .child(
+                    div()
+                        .id(("bubble", index))
+                        .cursor_pointer()
+                        .max_w(if compact { px(280.) } else { px(560.) })
+                        .px_3()
+                        .py_2()
+                        .when(line.outgoing, |d| d.bg(rgb(0x0a84ff)).text_color(rgb(0xffffff)))
+                        .when(!line.outgoing, |d| d.bg(rgb(bubble)))
+                        .when(pending, |d| d.opacity(0.6))
+                        .rounded(px(18.))
+                        .when(!pending, |d| d.on_click(move |_, _, _| psms_star(index as u32)))
+                        .child(line.body.clone()),
+                )
+                .when(line.starred, |d| d.child(div().text_sm().child("⭐")));
+            list = list.child(row);
+            if pending {
+                list = list.child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .mb_2()
+                        .text_xs()
+                        .text_color(rgb(muted))
+                        .child(line.status.clone()),
+                );
+            }
         }
         list
     }
