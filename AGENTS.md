@@ -4,3 +4,4 @@ Create commits only when requested. Never sign commits as an AI or add AI attrib
 
 The Rust service receives messages from an iPhone Shortcut. Keep the HTTP contract platform-neutral for future Android clients. Run cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, and cargo test --locked before delivery. Preserve all targets in CI. Never log message bodies, senders, or credentials.
 
+Keep feature parity across every surface: the hosted web inbox (in the Papamo site repository), the desktop app, the CLI and the MCP server. When a feature lands on one, add it to the others in the same change or record the gap and its reason in HANDOFF.md. Platform limits, such as sending through Messages on a Mac, still need an equivalent path or a clear explanation on the other surfaces.

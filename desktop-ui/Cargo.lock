@@ -5391,6 +5391,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "bip39",
+ "flate2",
  "getrandom 0.4.3",
  "gpui-kit",
  "hostname",

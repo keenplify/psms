@@ -9,6 +9,7 @@ mod connect;
 #[path = "../../src/hook_store.rs"]
 mod hook_store;
 mod hosted_login;
+mod kit;
 #[path = "../../src/onboard.rs"]
 mod onboard;
 #[path = "../../src/recovery.rs"]
@@ -840,6 +841,41 @@ impl Dashboard {
             cx.notify();
             return;
         };
+        self.use_key(key, window, cx);
+    }
+    /// Unlocks with the recovery kit PDF instead of typing the words.
+    fn unlock_with_kit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open recovery kit".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = std::fs::read(&path).map_err(|_| "Could not open that file.")?;
+                    kit::key_from_kit(&bytes)
+                })
+                .await;
+            let _ = this.update_in(cx, |s, window, cx| match result {
+                Ok(key) => s.use_key(key, window, cx),
+                Err(e) => {
+                    s.notice = e.into();
+                    cx.notify()
+                }
+            });
+        })
+        .detach();
+    }
+    fn use_key(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
         let valid=self.db.query_row("SELECT body FROM messages WHERE sender='papamo:encrypted:v1' ORDER BY rowid DESC LIMIT 1",[],|r|r.get::<_,String>(0));
         if valid.is_ok()
             && !self
@@ -958,6 +994,13 @@ impl Dashboard {
                                     .primary()
                                     .on_click(cx.listener(|s, _, w, cx| s.unlock(w, cx))),
                             ),
+                    )
+                    .child(
+                        Button::new("unlock-kit")
+                            .icon(IconName::FolderOpen)
+                            .ghost()
+                            .label("Open recovery kit PDF…")
+                            .on_click(cx.listener(|s, _, w, cx| s.unlock_with_kit(w, cx))),
                     ),
             )
         }
