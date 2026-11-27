@@ -15,6 +15,7 @@ macro_rules! env_name {
 #[allow(dead_code)]
 mod app_tokens;
 mod attachments;
+mod autofill_connect;
 mod cards;
 mod chats;
 mod cli;
@@ -466,6 +467,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     db.execute_batch(attachments::SCHEMA)?;
     db.execute_batch(chats::SCHEMA)?;
     db.execute_batch(health::SCHEMA)?;
+    db.execute_batch(autofill_connect::SCHEMA)?;
     db.execute_batch(outbox::SCHEMA)?;
     outbox::migrate(&db)?;
     db.execute_batch(device_api::SCHEMA)?;
@@ -554,6 +556,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .merge(attachments::routes(&prefix, archive.clone()))
         .merge(chats::routes(&prefix, archive.clone()))
         .merge(health::routes(&prefix, archive.clone()))
+        .merge(autofill_connect::routes(&prefix, archive.clone()))
         .merge(outbox::routes(&prefix, archive.clone()))
         .merge(cloud::routes(&prefix, archive.clone()))
         .route(&format!("{prefix}/messages"), post(receive))

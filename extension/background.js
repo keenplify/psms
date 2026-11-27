@@ -91,20 +91,41 @@ const hostedApi = "https://na.sms.papamo.dev/free/v1";
 api.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg?.type !== "psms:signin" || sender.url !== api.runtime.getURL("popup.html")) return false;
   (async () => {
-    const tab = await api.tabs.create({url:"about:blank"});
+    // Quietly first: if papamo.dev is already signed in and remembers the archive, this
+    // connects without showing anything. The tab comes forward only when it needs you.
+    const tab = await api.tabs.create({url:"about:blank", active:false});
     await api.storage.session.set({signin:{id:tab.id, expires:Date.now()+600000}});
     await api.tabs.update(tab.id,{url:hostedInbox});
   })().then(()=>reply(true),()=>reply(false));
   return true;
 });
 const connecting = new Set();
+async function showTab(id){ try { const tab=await api.tabs.update(id,{active:true}); await api.windows.update(tab.windowId,{focused:true}); } catch {} }
 api.tabs.onUpdated.addListener(async (id, change, tab) => {
+  // Sent to sign in: bring the tab forward.
+  if(change.status === "complete" && tab.url?.startsWith("https://www.papamo.dev/login")){
+    const {signin} = await api.storage.session.get("signin");
+    if(signin?.id === id)await showTab(id);
+    return;
+  }
   if(change.status !== "complete" || tab.url?.split(/[?#]/)[0] !== hostedInbox || connecting.has(id))return;
   const {signin} = await api.storage.session.get("signin");
   if(signin?.id !== id || signin.expires < Date.now())return;
   connecting.add(id);
   try {
-    const [response] = await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:async (deadline)=>{
+    // A few quiet tries; if the page still needs a sign-in or the recovery kit, show it.
+    let quiet = null;
+    for (let i = 0; i < 6 && quiet?.state !== "connected"; i++) {
+      const [probe] = await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:async()=>{
+        const r = await window.connectPapamoAutofill?.();
+        return r?.state === "needs-key" ? {state:"needs-key"} : r;
+      }});
+      quiet = probe?.result;
+      if (quiet?.state === "needs-key") break;
+      if (quiet?.state !== "connected") await new Promise(r => setTimeout(r, 1000));
+    }
+    if (quiet?.state !== "connected") await showTab(id);
+    const [response] = quiet?.state === "connected" ? [{result:quiet}] : await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:async (deadline)=>{
       if(location.origin!=="https://www.papamo.dev" || location.pathname!=="/sms/inbox")return;
       while(Date.now()<deadline) {
         const result=await window.connectPapamoAutofill?.();
@@ -119,10 +140,46 @@ api.tabs.onUpdated.addListener(async (id, change, tab) => {
     await api.storage.local.set({server:hostedApi});
     await api.storage.session.set({pair:{key:result.key,token:result.token,server:hostedApi,username:result.username}});
     await api.storage.session.remove("signin");
-    // Show the page's "Autofill is connected" confirmation.
-    await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:(username)=>{
-      if(location.origin==="https://www.papamo.dev" && location.pathname==="/sms/inbox")window.papamoAutofillConnected?.(username);
-    },args:[result.username??""]});
+    if (quiet?.state === "connected") {
+      // Connected without needing you: close the quiet tab.
+      await api.tabs.remove(id).catch(()=>{});
+    } else {
+      // Show the page's "Autofill is connected" confirmation.
+      await api.scripting.executeScript({target:{tabId:id},world:"MAIN",func:(username)=>{
+        if(location.origin==="https://www.papamo.dev" && location.pathname==="/sms/inbox")window.papamoAutofillConnected?.(username);
+      },args:[result.username??""]});
+    }
   } catch { /* A closed or navigated tab cancels the handoff. */ }
   finally { connecting.delete(id); }
+});
+
+// pSMS on this computer: ask the app, which shows Allow / Don't allow, then collect the grant.
+const localApi = "http://127.0.0.1:47832/v1";
+api.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg?.type !== "psms:local-connect" || sender.url !== api.runtime.getURL("popup.html")) return false;
+  (async () => {
+    const r = await fetch(localApi + "/autofill/connect", {method:"POST", redirect:"error", credentials:"omit", cache:"no-store", signal:AbortSignal.timeout(4000)});
+    if (!r.ok) throw Error();
+    const {id} = await r.json();
+    await api.storage.session.set({localAsk:{id, state:"waiting"}});
+    reply(true);
+    const until = Date.now() + 300000;
+    while (Date.now() < until) {
+      await new Promise(done => setTimeout(done, 1500));
+      const check = await fetch(localApi + "/autofill/connect/" + id, {redirect:"error", credentials:"omit", cache:"no-store"}).catch(()=>null);
+      if (!check?.ok) break;
+      const answer = await check.json();
+      if (answer.status === "waiting") continue;
+      const g = answer.grant;
+      if (answer.status === "approved" && g && /^[0-9a-f]{64}$/i.test(g.token) && typeof g.key === "string" && /^https?:\/\//.test(g.server)) {
+        await api.storage.local.set({server:g.server});
+        await api.storage.session.set({pair:{key:g.key, token:g.token, server:g.server.replace(/\/+$/,""), username:g.username}, localAsk:{id, state:"connected"}});
+      } else {
+        await api.storage.session.set({localAsk:{id, state:"denied"}});
+      }
+      return;
+    }
+    await api.storage.session.set({localAsk:{id, state:"expired"}});
+  })().catch(() => reply(false));
+  return true;
 });

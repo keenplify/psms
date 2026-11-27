@@ -94,6 +94,10 @@ fn open_mobile_template(folder: &Path) -> std::io::Result<()> {
     {
         return Err(std::io::Error::other("Apple Shortcuts signing failed"));
     }
+    // Automated runs (tests, release checks) sign the shortcut without opening Shortcuts.
+    if std::env::var_os("PSMS_ONBOARD_NO_OPEN").is_some() {
+        return Ok(());
+    }
     if !Command::new("/usr/bin/open")
         .args(["-a", "Shortcuts"])
         .arg(&signed)

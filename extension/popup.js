@@ -47,11 +47,13 @@ async function detect(){
   const {pair}=await api.storage.session.get("pair");
   show(pair);
   if(pair){status(tab?.url?.startsWith("https://")?"":"Open a sign-in page to enable autofill there.");return}
+  // pSMS running on this computer: the quickest way in, approved in the app.
   try{
     const r=await fetch(local+"/.well-known/psms",{redirect:"error",signal:AbortSignal.timeout(1200)});
-    if((await r.json()).service==="psms" && !server && !custom){status("pSMS is running on this computer: choose Use my own pSMS server to connect to it.");return}
+    if((await r.json()).service==="psms")el("here").hidden=false;
   }catch{}
-  status("");
+  const {localAsk}=await api.storage.session.get("localAsk");
+  status(localAsk?.state==="waiting"?"Waiting for you to click Allow in pSMS…":"");
 }
 el("account").onclick=async()=>{
   try {
@@ -111,4 +113,21 @@ el("enable").onclick=async()=>{
 el("mode").disabled=el("server").disabled=el("connect").disabled=el("enable").disabled=true;
 detect().catch(()=>status("Open Settings in pSMS to connect.")).finally(()=>{
   el("mode").disabled=el("server").disabled=el("connect").disabled=el("enable").disabled=false;
+});
+
+el("local").onclick=async()=>{
+  try{
+    // The app may hand over a papamo.dev inbox, so ask for it now while there's a click.
+    await api.permissions.request({origins:["https://na.sms.papamo.dev/*"]}).catch(()=>false);
+    if(!await api.runtime.sendMessage({type:"psms:local-connect"}))throw Error();
+    status("Click Allow in pSMS to finish.");
+  }catch{status("Could not reach pSMS on this computer. Open it and try again.")}
+};
+// Connected (or refused) while the popup is open: show it straight away.
+api.storage.onChanged.addListener(async(changes,area)=>{
+  if(area!=="session")return;
+  if(changes.pair?.newValue){show(changes.pair.newValue);status("Connected. Enable autofill on the sign-in site.")}
+  const ask=changes.localAsk?.newValue;
+  if(ask?.state==="denied")status("pSMS didn't allow it. Choose Connect again to retry.");
+  if(ask?.state==="expired")status("No answer from pSMS. Choose Connect again.");
 });

@@ -24,7 +24,8 @@ class ArchiveTest(unittest.TestCase):
         self.root = Path(folder.name)
         self.db = self.root / "test.sqlite3"
         self.env = {k: v for k,v in os.environ.items() if not k.startswith(("PSMS_","PAPAMO_"))}
-        self.env.update(PSMS_DB_PATH=str(self.db), PSMS_BIND="127.0.0.1:0", PSMS_API_PREFIX="/test/v1")
+        # Sign shortcuts without opening an "Add Shortcut" window for every run.
+        self.env.update(PSMS_DB_PATH=str(self.db), PSMS_BIND="127.0.0.1:0", PSMS_API_PREFIX="/test/v1", PSMS_ONBOARD_NO_OPEN="1")
 
     def cli(self, *args):
         return subprocess.check_output([binary, *args], env=self.env, text=True, timeout=20).strip()
@@ -151,6 +152,18 @@ class ArchiveTest(unittest.TestCase):
                 self.assertIsNotNone(health["phones"][0]["checked_in_at"])
                 self.assertIsNotNone(health["missed_at"])
                 self.assertGreater(health["recent_messages_7d"],0)
+                # Autofill connect: only an extension can ask, and only an approved grant comes back, once.
+                self.assertEqual(self.request("POST","/autofill/connect",owner)[0],403)
+                asked=json.load(urlopen(Request(self.base+"/autofill/connect",method="POST",headers={"Origin":"chrome-extension://abc"})))
+                self.assertEqual(asked["status"],"waiting")
+                check=lambda origin: urlopen(Request(self.base+"/autofill/connect/"+asked["id"],headers={"Origin":origin}))
+                self.assertEqual(json.load(check("chrome-extension://abc"))["status"],"waiting")
+                with self.assertRaises(HTTPError): check("chrome-extension://other")
+                with sqlite3.connect(self.db) as db:
+                    db.execute("UPDATE autofill_requests SET status='approved', grant=? WHERE id=?",(json.dumps({"token":"t"*64}),asked["id"]))
+                db.close()
+                self.assertEqual(json.load(check("chrome-extension://abc"))["grant"]["token"],"t"*64)
+                with self.assertRaises(HTTPError): check("chrome-extension://abc")
                 # Chats and reactions: sealed, linked by opaque IDs, and listed with their messages.
                 chat="c"*32
                 self.assertEqual(self.request("PUT","/chats/"+chat,upload,{"envelope":sealed})[0],204)

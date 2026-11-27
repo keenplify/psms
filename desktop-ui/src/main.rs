@@ -129,6 +129,8 @@ struct Dashboard {
     /// Photos from Messages, opened once and kept for this session; `None` while loading
     /// or when one could not be opened.
     photos: std::cell::RefCell<Photos>,
+    /// pSMS Autofill requests already shown, so each asks once.
+    autofill_asked: std::collections::HashSet<String>,
     /// The inbox's `/health`: whether the iPhone is still sending, and a warning closed for now.
     phone_health: Option<serde_json::Value>,
     health_closed: bool,
@@ -325,6 +327,106 @@ impl Dashboard {
 
     /// The next batch of senders to match with this Mac's Contacts: everyone every 30 minutes,
     /// and anyone new in between.
+    /// Shows a waiting pSMS Autofill request: Allow hands that browser a token and the key.
+    fn ask_autofill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.external {
+            return;
+        }
+        let waiting: Option<(String, String)> = self
+            .db
+            .query_row(
+                "SELECT id, origin FROM autofill_requests WHERE status='waiting' AND created >= unixepoch()-300 ORDER BY created LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let Some((id, origin)) = waiting else { return };
+        if !self.autofill_asked.insert(id.clone()) {
+            return;
+        }
+        let browser = if origin.starts_with("moz-extension://") {
+            "Firefox"
+        } else if origin.starts_with("safari-web-extension://") {
+            "Safari"
+        } else {
+            "your browser"
+        };
+        let me = cx.entity();
+        window.activate_window();
+        cx.activate(true);
+        let body = format!(
+            "pSMS Autofill in {browser} wants to read verification codes from your texts. Allow it only if you just clicked Connect in the extension."
+        );
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (allow, deny) = (me.clone(), me.clone());
+            let (yes, no) = (id.clone(), id.clone());
+            dialog
+                .title("Connect pSMS Autofill?")
+                .w(px(500.))
+                .child(div().v_flex().gap_3().child(body.clone()))
+                .footer(
+                    div()
+                        .h_flex()
+                        .gap_2()
+                        .child(Button::new("autofill-deny").label("Don't allow").on_click(
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                deny.update(cx, |s, cx| {
+                                    let _ = s.db.execute(
+                                        "UPDATE autofill_requests SET status='denied' WHERE id=?1",
+                                        [&no],
+                                    );
+                                    cx.notify()
+                                });
+                            },
+                        ))
+                        .child(
+                            Button::new("autofill-allow")
+                                .primary()
+                                .label("Allow")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    allow.update(cx, |s, cx| s.grant_autofill(yes.clone(), cx));
+                                }),
+                        ),
+                )
+        });
+    }
+    /// Issues a browser token for the open inbox and leaves it, with the key, for the extension.
+    fn grant_autofill(&mut self, id: String, cx: &mut Context<Self>) {
+        let grant = match (&self.hosted, &self.session_key, self.api()) {
+            (Some(h), _, _) => h
+                .call(reqwest::Method::POST, "/auth/browser", None)
+                .and_then(|v| {
+                    v["token"]
+                        .as_str()
+                        .map(|t| serde_json::json!({"token": t, "key": h.key(), "server": relay::HOSTED, "username": "papamo.dev"}))
+                        .ok_or_else(|| "papamo.dev didn't issue a browser token.".to_string())
+                }),
+            (None, Some(key), Some(api)) => app_tokens::issue(&self.db, "browser", Some(7))
+                .map(|t| serde_json::json!({"token": t, "key": key, "server": api.base(), "username": "pSMS on this computer"}))
+                .map_err(|_| "Could not create a browser token.".to_string()),
+            (None, None, _) => Err("Unlock pSMS first, then choose Connect in the extension again.".into()),
+            (None, Some(_), None) => Err("Start the archive service, then choose Connect in the extension again.".into()),
+        };
+        match grant {
+            Ok(grant) => {
+                let _ = self.db.execute(
+                    "UPDATE autofill_requests SET status='approved', grant=?1 WHERE id=?2",
+                    rusqlite::params![grant.to_string(), id],
+                );
+                self.notice = "pSMS Autofill is connected in your browser.".into();
+            }
+            Err(e) => {
+                let _ = self.db.execute(
+                    "UPDATE autofill_requests SET status='denied' WHERE id=?1",
+                    [&id],
+                );
+                self.notice = e;
+            }
+        }
+        cx.notify()
+    }
     /// Where this inbox's files come from, and the key that opens them.
     fn files_source(&self) -> Option<(mac_messages::Inbox, String)> {
         match (&self.hosted, self.api(), &self.session_key) {
@@ -2453,6 +2555,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         cx.spawn_in(window, async move |this, cx| {
                             loop {
                                 cx.background_executor().timer(Duration::from_millis(700)).await;
+                                // pSMS Autofill asking to connect: ask the person here.
+                                if this.update_in(cx, |s, window, cx| s.ask_autofill(window, cx)).is_err() {
+                                    break;
+                                }
                                 let Ok(wanted) = std::fs::read_to_string(&show) else { continue };
                                 let _ = std::fs::remove_file(&show);
                                 let shown = this.update_in(cx, |s, window, cx| {
@@ -2715,6 +2821,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             messages_error: None,
                             contacts_error: None,
                             phone_health: None,
+                            autofill_asked: Default::default(),
                             health_closed: false,
                             photos: Default::default(),
                             alert_source: None,

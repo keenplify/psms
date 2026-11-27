@@ -41,6 +41,10 @@ impl Api {
             token,
         })
     }
+    /// The API address, as browser extensions connect to it.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
     pub fn call(
         &self,
         method: reqwest::Method,
