@@ -1,7 +1,9 @@
 //! Fills contact cards from this Mac's Contacts. Each person who has texted you is matched by
 //! phone number (the last ten digits, so +63 and 0 prefixes agree), and their name, company,
 //! title, numbers, emails and photo are sealed with the archive key and saved as the device's
-//! copy, which never overrides your own edits. Unchanged cards are not sent again.
+//! copy, which never overrides your own edits. Like BlueBubbles reading the Mac's address book,
+//! this is on unless turned off. Each card is sent again once a day, so the Mac's copy wins back
+//! over a phone that had no name for the number.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -16,7 +18,7 @@ pub fn enabled(db: &Connection) -> bool {
         [],
         |r| r.get(0),
     )
-    .unwrap_or(false)
+    .unwrap_or(cfg!(target_os = "macos"))
 }
 pub fn set_enabled(db: &Connection, on: bool) -> rusqlite::Result<()> {
     db.execute_batch(SCHEMA)?;
@@ -135,7 +137,12 @@ pub fn sync(
         matched += 1;
         let card = card(person);
         let id = crate::replies::contact_id(sender, key);
-        let digest = format!("{:x}", Sha256::digest(card.to_string()));
+        // The day is part of the digest, so an unchanged card is still sent once a day.
+        let day = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() / 86_400)
+            .unwrap_or_default();
+        let digest = format!("{:x}", Sha256::digest(format!("{day}\n{card}")));
         let sent: Option<String> = db
             .query_row(
                 "SELECT digest FROM desktop_mac_contact_sent WHERE contact_id=?1",
@@ -156,7 +163,8 @@ pub fn sync(
         );
     }
     let _ = db.execute(
-        "UPDATE desktop_mac_contacts SET matched=?1, synced_at=unixepoch() WHERE id=1",
+        "INSERT INTO desktop_mac_contacts(id,enabled,matched,synced_at) VALUES(1,1,?1,unixepoch())
+         ON CONFLICT(id) DO UPDATE SET matched=excluded.matched, synced_at=excluded.synced_at",
         [matched as i64],
     );
     Ok(matched)

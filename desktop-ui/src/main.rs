@@ -128,6 +128,8 @@ struct Dashboard {
     /// Photos from Messages, opened once and kept for this session; `None` while loading
     /// or when one could not be opened.
     photos: std::cell::RefCell<Photos>,
+    /// Why matching Mac Contacts last failed, shown in Settings.
+    contacts_error: Option<String>,
     /// Why copying from Messages last failed, shown in Settings.
     messages_error: Option<String>,
     /// Texts already seen, so each new one notifies once, and which inbox they came from.
@@ -436,12 +438,18 @@ impl Dashboard {
             return None;
         }
         let key = self.session_key.clone()?;
-        let senders: Vec<String> = self
+        // Everyone who texts you, including each person in a group chat.
+        let mut senders: Vec<String> = self
             .threads
             .iter()
-            .map(|t| t.title.clone())
+            .flat_map(|t| {
+                std::iter::once(t.title.clone())
+                    .chain(t.items.iter().filter_map(|m| m.from.clone()))
+            })
             .filter(|t| mac_contacts::number_key(t).is_some())
             .collect();
+        senders.sort();
+        senders.dedup();
         let due = self
             .contacts_full_at
             .is_none_or(|t| t.elapsed() > Duration::from_secs(1800));
@@ -2495,9 +2503,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .await;
                                     if this
                                         .update(cx, |s, cx| {
-                                            if let Err(e) = result {
-                                                s.notice = e;
-                                            }
+                                            // Shown in Settings → Contacts, not as a notice every few minutes.
+                                            s.contacts_error = result.err();
                                             s.hosted_seen = None;
                                             s.refresh();
                                             cx.notify();
@@ -2632,6 +2639,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             contacts_done: Default::default(),
                             alert_seen: Default::default(),
                             messages_error: None,
+                            contacts_error: None,
                             photos: Default::default(),
                             alert_source: None,
                             contacts_full_at: None,

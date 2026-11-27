@@ -860,10 +860,13 @@ impl Dashboard {
     /// Names and photos from this Mac's Contacts for the people who text you.
     pub(super) fn contacts_row(&self, cx: &mut Context<Self>) -> Div {
         let on = mac_contacts::enabled(&self.db);
-        let detail = match mac_contacts::status(&self.db) {
-            Some((n, Some(_))) => format!("Names and photos for {n} people"),
-            Some(_) => "Matching your contacts…".to_string(),
-            None => "Names and photos from this Mac's Contacts".to_string(),
+        let detail = match (&self.contacts_error, mac_contacts::status(&self.db)) {
+            (Some(e), _) if on => e.clone(),
+            (_, Some((n, Some(_)))) => {
+                format!("Names and photos for {n} people from this Mac's Contacts")
+            }
+            _ if on => "Matching people who text you with this Mac's Contacts…".to_string(),
+            _ => "Names and photos from this Mac's Contacts".to_string(),
         };
         self.setting_row(
             "Contacts",

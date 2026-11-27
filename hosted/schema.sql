@@ -228,3 +228,12 @@ CREATE INDEX IF NOT EXISTS message_reactions_message ON message_reactions(accoun
 GRANT SELECT,INSERT,UPDATE,DELETE ON message_reactions TO psms_runtime;
 -- Scheduled texts: pSMS for Mac claims a queued text only once it is due.
 ALTER TABLE outbox ADD COLUMN IF NOT EXISTS send_at timestamptz;
+-- Which app a computer token belongs to. pSMS's own apps (pSMS for Mac, self-hosted Plus sync)
+-- name themselves and aren't rate-limited; only tokens for the public API are. Tokens made
+-- before this column existed all came from pSMS for Mac.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sessions' AND column_name='client') THEN
+    ALTER TABLE sessions ADD COLUMN client text;
+    UPDATE sessions SET client='pSMS for Mac' WHERE scope='computer';
+  END IF;
+END $$;

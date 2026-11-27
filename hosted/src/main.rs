@@ -72,9 +72,10 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Result<Vec<u8>, Failure> {
         .ok_or(DENIED)?;
     Ok(Sha256::digest(token.as_bytes()).to_vec())
 }
-/// Free accounts get 100 API calls per 30 minutes from tokens other services use (computer
-/// tokens today). The signed-in inbox, phone uploads and the Mac relay's queue checks are not
-/// counted, and unlimited plans and self-hosted servers have no limit.
+/// Free accounts get 100 API calls per 30 minutes on the public API: computer tokens made for
+/// other services. pSMS's own apps are never counted: the signed-in web inbox, phone uploads,
+/// and computer tokens that pSMS for Mac or self-hosted Plus sync asked for. Unlimited plans
+/// and self-hosted servers have no limit.
 async fn throttle(
     State(a): State<App>,
     request: axum::extract::Request,
@@ -96,7 +97,7 @@ async fn throttle(
         .query_opt(
             "INSERT INTO api_usage(account_id,window_start,calls)
                SELECT s.account_id, now(), 1 FROM sessions s JOIN archive_quota q ON q.id=s.account_id
-               WHERE s.digest=$1 AND s.scope='computer' AND s.expires_at>now() AND q.api_calls_per_30_min IS NOT NULL
+               WHERE s.digest=$1 AND s.scope='computer' AND s.client IS NULL AND s.expires_at>now() AND q.api_calls_per_30_min IS NOT NULL
              ON CONFLICT(account_id) DO UPDATE SET
                calls=CASE WHEN api_usage.window_start <= now()-interval '30 minutes' THEN 1 ELSE api_usage.calls+1 END,
                window_start=CASE WHEN api_usage.window_start <= now()-interval '30 minutes' THEN now() ELSE api_usage.window_start END
@@ -220,8 +221,22 @@ async fn me(State(a): State<App>, h: HeaderMap) -> Reply {
 }
 /// A year-long token for a computer that serves this inbox, such as pSMS for Mac sending
 /// queued texts. It can do what a signed-in inbox can, and is listed and removed with phones.
-async fn computer(State(a): State<App>, h: HeaderMap) -> Result<axum::response::Response, Failure> {
+#[derive(Deserialize, Default)]
+struct ComputerRequest {
+    /// The pSMS app asking, such as "pSMS for Mac". Leave out for a public API token.
+    client: Option<String>,
+}
+/// pSMS's own apps that a computer token can belong to; their calls aren't rate-limited.
+const APPS: [&str; 2] = ["pSMS for Mac", "pSMS self-hosted sync"];
+async fn computer(
+    State(a): State<App>,
+    h: HeaderMap,
+    body: Option<Json<ComputerRequest>>,
+) -> Result<axum::response::Response, Failure> {
     use axum::response::IntoResponse;
+    let client = body
+        .and_then(|Json(b)| b.client)
+        .filter(|c| APPS.contains(&c.as_str()));
     let id = identity(&a, &h, false).await?;
     if !plans::gates(&a, id).await?.replies {
         return Ok(plans::upgrade("Replying from anywhere"));
@@ -229,8 +244,8 @@ async fn computer(State(a): State<App>, h: HeaderMap) -> Result<axum::response::
     let db = a.pool.get().await.map_err(|_| DOWN)?;
     let (token, digest) = new_token();
     db.execute(
-        "INSERT INTO sessions(digest,account_id,expires_at,scope) VALUES($1,$2,now()+interval '1 year','computer')",
-        &[&digest, &id],
+        "INSERT INTO sessions(digest,account_id,expires_at,scope,client) VALUES($1,$2,now()+interval '1 year','computer',$3)",
+        &[&digest, &id, &client],
     )
     .await
     .map_err(|_| DOWN)?;

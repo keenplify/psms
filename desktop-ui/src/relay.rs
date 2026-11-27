@@ -335,6 +335,8 @@ pub fn computer_token(signed_in: &str) -> Result<String, String> {
         let v: Value = client
             .post(format!("{HOSTED}/computers"))
             .bearer_auth(signed_in)
+            // pSMS's own app: its calls aren't counted against the public API limit.
+            .json(&serde_json::json!({"client": "pSMS for Mac"}))
             .send()
             .await
             .map_err(|_| "Could not reach your account. Try again.".to_string())
