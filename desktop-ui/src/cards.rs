@@ -65,6 +65,17 @@ fn text(v: &Value, field: &str) -> String {
 }
 /// Reads `[{"label","value"}]`, also accepting the earlier plain-string lists.
 fn list(v: &Value, field: &str, fallback: &str) -> Vec<Labeled> {
+    // The iPhone shortcut sends one entry per line in a single string.
+    if let Some(lines) = v.get(field).and_then(Value::as_str) {
+        return lines
+            .lines()
+            .map(|l| Labeled {
+                label: fallback.into(),
+                value: l.trim().into(),
+            })
+            .filter(|l| !l.value.is_empty())
+            .collect();
+    }
     v.get(field)
         .and_then(Value::as_array)
         .map(|a| {
@@ -247,5 +258,11 @@ mod tests {
         save(&db, key, &id, None).unwrap();
         assert_eq!(load(&db, key)[&id].card.name, "Ana Reyes");
         assert!(load(&db, "f".repeat(32).as_str()).is_empty());
+        let shortcut = parse(
+            &json!({"fn": "Ana", "tel": "+1 555 0100\n+1 555 0101\n", "email": "a@example.com"}),
+        );
+        assert_eq!(shortcut.phones.len(), 2);
+        assert_eq!(shortcut.phones[1].value, "+1 555 0101");
+        assert_eq!(shortcut.emails[0].label, "email");
     }
 }
