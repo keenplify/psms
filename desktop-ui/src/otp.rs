@@ -127,6 +127,29 @@ fn is_fresh() -> bool {
         .unwrap_or(false)
 }
 
+/// A plain notification for a new text: the sender, then the message.
+pub fn alert(id: &str, title: &str, body: &str) {
+    platform::alert(id, title, body);
+}
+
+/// Whether new texts notify, on unless turned off in Settings.
+pub fn alerts_enabled(db: &rusqlite::Connection) -> bool {
+    db.query_row("SELECT enabled FROM desktop_alerts WHERE id=1", [], |r| {
+        r.get::<_, bool>(0)
+    })
+    .unwrap_or(true)
+}
+pub fn set_alerts(db: &rusqlite::Connection, on: bool) -> rusqlite::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS desktop_alerts(id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL)",
+    )?;
+    db.execute(
+        "INSERT INTO desktop_alerts(id,enabled) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+        [on],
+    )
+    .map(|_| ())
+}
+
 /// Sets up notifications and the Tab key. Call once at launch.
 pub fn start() {
     platform::start();
@@ -320,6 +343,31 @@ mod platform {
             .addNotificationRequest_withCompletionHandler(&request, None);
     }
 
+    pub fn alert(id: &str, title: &str, body: &str) {
+        if !native() {
+            let _ = std::process::Command::new("/usr/bin/osascript")
+                .args([
+                    "-e",
+                    "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+                    "--",
+                    title,
+                    body,
+                ])
+                .output();
+            return;
+        }
+        let content = UNMutableNotificationContent::new();
+        content.setTitle(&NSString::from_str(title));
+        content.setBody(&NSString::from_str(body));
+        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+            &NSString::from_str(&format!("text-{id}")),
+            &content,
+            None,
+        );
+        UNUserNotificationCenter::currentNotificationCenter()
+            .addNotificationRequest_withCompletionHandler(&request, None);
+    }
+
     /// Types the code into the app in front, one character at a time.
     pub fn type_code(code: &str) {
         let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
@@ -422,6 +470,29 @@ mod platform {
                 .spawn();
         }
         copy(code);
+    }
+    pub fn alert(_id: &str, title: &str, body: &str) {
+        #[cfg(target_os = "windows")]
+        {
+            let script = "param($t, $b) Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; $n.ShowBalloonTip(10000, $t, $b, 'Info'); Start-Sleep 11; $n.Dispose()";
+            let _ = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    script,
+                    title,
+                    body,
+                ])
+                .spawn();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = std::process::Command::new("notify-send")
+                .args(["--app-name=pSMS", title, body])
+                .spawn();
+        }
     }
     pub fn request_typing_permission() {}
     pub fn can_type() -> bool {

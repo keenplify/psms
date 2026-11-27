@@ -104,6 +104,10 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Managed webhooks (Plus) | Settings → Webhooks, delivery log, retry | Gap: self-hosted keeps its own webhooks in Settings | Gap | Gap |
 | One-time code alerts | Browser extension (autofill) | Native notification with Copy code / Type code; Tab types the code for a minute (macOS; Windows and Linux show a plain notification and copy the code) | — | — |
 | Devices-only send API (LAN, Tailscale) | — (hosted) | Settings → Your devices, send key | `manage devices`, `access create send` | — (configuration) |
+| Notification for each new text | Settings → Notifications: while the tab is open and unlocked, even in the background (browser notifications, no push service yet) | Settings → Notifications (on by default); codes keep their own Copy/Type alert | — (no long-running UI) | — |
+| Start a new conversation | ✎ beside the star filter: To field, then the usual composer; queued for pSMS for Mac | + beside Messages (pSMS for Mac only, since Messages sends it) | `outbox send` to any number | `send_message` to any number |
+| Open at login, installing updates on start | — | Settings → Open at login, off until turned on (LaunchAgent, Windows Run key, XDG autostart); a login launch installs a waiting update straight away | — | — |
+| Photos (MMS) and group texts | Gap | Gap | Gap | Gap: the iPhone Shortcut sends only the sender and text. Whether iOS exposes attachments and group members to a Message automation needs a test on a real iPhone; pSMS for Mac could instead read them from Messages with Full Disk Access |
 | Names and photos from the computer's address book | — (browsers can't read it) | macOS: Settings → Mac Contacts sends a sealed card (`"copy":"device"`, stored as the phone copy) for each sender it matches; Windows and Linux have no address book API to read yet | Gap: reads cards, can't read Mac Contacts | Gap: reads cards only |
 | Switch between papamo.dev and this computer's archive | Hosted only | Settings → Where your texts live, with a confirmation that explains the switch, plus Sync to web (Plus) | `manage cloud connect` | — |
 

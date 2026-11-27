@@ -291,21 +291,7 @@ impl Dashboard {
             if let Some(error) = status.error {
                 view = view.child(div().text_sm().text_color(rgb(0xc62828)).child(error));
             }
-            let at_login = relay::opens_at_login();
-            return view.child(
-                self.setting_row(
-                    "Open at login",
-                    "So waiting replies send once this Mac is on",
-                    Button::new("relay-login")
-                        .label(if at_login { "Turn off" } else { "Turn on" })
-                        .on_click(cx.listener(move |s, _, _, cx| {
-                            if let Err(e) = relay::set_open_at_login(!at_login) {
-                                s.notice = e.into();
-                            }
-                            cx.notify()
-                        })),
-                ),
-            );
+            return view;
         }
         view.child(self.setting_row(
             "Reply from anywhere",
@@ -410,7 +396,7 @@ impl Dashboard {
                     field.update(cx, |i, cx| i.set_value("", window, cx));
                 }
                 // Start with the Mac, so texts queued while it was off go out when it is back.
-                let _ = relay::set_open_at_login(true);
+                let _ = login::set(true);
                 self.notice = "This Mac now sends the texts you queue, and pSMS opens at login. Messages may ask for permission the first time.".into();
             }
             Err(e) => self.notice = e,
@@ -764,6 +750,47 @@ impl Dashboard {
                         Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(w), cx);
                     } else {
                         s.notice = "Could not save appearance.".into()
+                    }
+                    cx.notify()
+                })),
+        )
+    }
+    /// Opening pSMS at login, off until turned on, so texts notify, replies send and updates
+    /// install without opening the app.
+    pub(super) fn login_row(&self, cx: &mut Context<Self>) -> Div {
+        let on = login::enabled();
+        self.setting_row(
+            "Open at login",
+            if replies::SUPPORTED {
+                "Notify new texts, send waiting replies and install updates without opening pSMS"
+            } else {
+                "Notify new texts and install updates without opening pSMS"
+            },
+            Button::new("login-toggle")
+                .label(if on { "Turn off" } else { "Turn on" })
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if let Err(e) = login::set(!on) {
+                        s.notice = e.into();
+                    }
+                    cx.notify()
+                })),
+        )
+    }
+    /// A notification for each new text while pSMS is open.
+    pub(super) fn alerts_row(&self, cx: &mut Context<Self>) -> Div {
+        let on = otp::alerts_enabled(&self.db);
+        self.setting_row(
+            "Notifications",
+            if on {
+                "Shows the sender and text when a new message arrives"
+            } else {
+                "Off: new texts appear in the inbox without a notification"
+            },
+            Button::new("alerts-toggle")
+                .label(if on { "Turn off" } else { "Turn on" })
+                .on_click(cx.listener(move |s, _, _, cx| {
+                    if otp::set_alerts(&s.db, !on).is_err() {
+                        s.notice = "Could not save this setting.".into();
                     }
                     cx.notify()
                 })),

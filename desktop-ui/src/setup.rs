@@ -374,6 +374,9 @@ impl Dashboard {
         if keep("appearance theme dark light mode") {
             general.push(self.appearance_row(cx).into_any_element());
         }
+        if keep("open at login startup start boot background automatic updates") {
+            general.push(self.login_row(cx).into_any_element());
+        }
         if keep("software updates version restart upgrade") {
             let mut buttons = div().h_flex().gap_2().child(
                 button("check-updates", "Check")
@@ -427,6 +430,9 @@ impl Dashboard {
             list = list.child(heading("General")).children(general);
         }
         let mut messages: Vec<AnyElement> = Vec::new();
+        if keep("notifications alerts new texts messages sound banner") {
+            messages.push(self.alerts_row(cx).into_any_element());
+        }
         if keep("one-time codes otp verification notification tab type copy accessibility") {
             messages.push(self.codes_view(cx).into_any_element());
         }

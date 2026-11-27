@@ -14,6 +14,7 @@ mod hook_store;
 mod hosted_login;
 #[path = "../../src/kit.rs"]
 mod kit;
+mod login;
 mod mac_contacts;
 #[path = "../../src/onboard.rs"]
 mod onboard;
@@ -71,6 +72,8 @@ struct Dashboard {
     update: Option<String>,
     updating: bool,
     checking: bool,
+    /// Opened at login: install an update as soon as the first check finds one.
+    auto_update: bool,
     update_status: String,
     checked_at: Option<String>,
     db: Connection,
@@ -117,6 +120,9 @@ struct Dashboard {
     settings_path: PathBuf,
     /// Senders already matched to this Mac's Contacts this session, and when all were last.
     contacts_done: std::collections::HashSet<String>,
+    /// Texts already seen, so each new one notifies once, and which inbox they came from.
+    alert_seen: std::collections::HashSet<String>,
+    alert_source: Option<(bool, bool)>,
     contacts_full_at: Option<std::time::Instant>,
     reading_shown: std::cell::RefCell<(Option<String>, usize)>,
     expiry: Option<u32>,
@@ -144,6 +150,9 @@ struct Dashboard {
     card_photo: Option<Option<(String, String)>>,
     reply: Entity<InputState>,
     sending: bool,
+    /// Writing a new conversation, and who it goes to.
+    composing: bool,
+    new_to: Entity<InputState>,
 }
 fn button(id: &'static str, label: &'static str) -> Button {
     let b = Button::new(id).label(label);
@@ -253,9 +262,15 @@ impl Dashboard {
                             "Version {v} is ready. Restart now or reopen pSMS to apply it."
                         );
                         s.update = Some(v);
+                        if s.auto_update {
+                            s.auto_update = false;
+                            s.apply_update(cx);
+                            return;
+                        }
                     }
                     Err(e) => s.update_status = format!("Update check failed. {e}"),
                 }
+                s.auto_update = false;
                 cx.notify();
             });
         })
@@ -406,8 +421,50 @@ impl Dashboard {
                     _ => Default::default(),
                 };
                 self.mark_selected_read();
+                self.announce_new();
             }
             Err(_) => self.notice = "Could not read this archive. Refresh to try again.".into(),
+        }
+    }
+    /// Notifies once for each text that arrives while pSMS is open. The first look at an
+    /// inbox only records what is already there.
+    fn announce_new(&mut self) {
+        if self.page != 0 || self.starred {
+            return;
+        }
+        let source = (self.hosted.is_some(), self.session_key.is_some());
+        let primed = self.alert_source == Some(source);
+        if !primed {
+            self.alert_seen.clear();
+            self.alert_source = Some(source);
+        }
+        let mut fresh = Vec::new();
+        for thread in &self.threads {
+            for mail in thread.items.iter().filter(|m| !m.outgoing) {
+                if self.alert_seen.insert(mail.id.clone()) && primed {
+                    let name = thread
+                        .contact
+                        .as_ref()
+                        .and_then(|c| self.cards.get(c))
+                        .map(|e| e.card.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| thread.title.clone());
+                    fresh.push((mail.id.clone(), name, mail.text.clone(), mail.locked));
+                }
+            }
+        }
+        let alerts = otp::alerts_enabled(&self.db);
+        let codes = otp::enabled(&self.db);
+        for (id, name, text, locked) in fresh.into_iter().take(5) {
+            if let Some(code) = otp::code(&text).filter(|_| codes && !locked) {
+                // Codes get their own notification with Copy and Type.
+                otp::announce(&id, &name, &code);
+            } else if alerts && locked {
+                otp::alert(&id, "New text", "Unlock pSMS to read it.");
+            } else if alerts {
+                let body: String = text.chars().take(180).collect();
+                otp::alert(&id, &name, &body);
+            }
         }
     }
     /// The open conversation counts as read once its messages can be read.
@@ -533,6 +590,7 @@ impl Dashboard {
                     })
                     .on_click(cx.listener(move |s, _, _, cx| {
                         s.selected = Some(key.clone());
+                        s.composing = false;
                         s.show(Screen::Inbox, cx)
                     }))
                     .child(
@@ -614,7 +672,27 @@ impl Dashboard {
                             .items_center()
                             .gap_2()
                             .child(img(self.logo.clone()).size(px(30.)))
-                            .child(self.heading("Messages")),
+                            .child(self.heading("Messages"))
+                            .when(
+                                replies::SUPPORTED && self.session_key.is_some() && !self.external,
+                                |row| {
+                                    row.child(div().flex_1()).child(
+                                        Button::new("new-message")
+                                            .icon(IconName::Plus)
+                                            .ghost()
+                                            .tooltip("New message")
+                                            .on_click(cx.listener(|s, _, window, cx| {
+                                                s.composing = true;
+                                                s.card_open = false;
+                                                s.new_to.update(cx, |i, cx| {
+                                                    i.set_value("", window, cx);
+                                                    i.focus(window, cx);
+                                                });
+                                                cx.notify()
+                                            })),
+                                    )
+                                },
+                            ),
                     )
                     .child(Input::new(&self.search))
                     .child(
@@ -1321,6 +1399,53 @@ impl Dashboard {
         if self.show_upsell() {
             pane = pane.child(self.upsell_banner(cx));
         }
+        if self.composing {
+            return pane
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_3()
+                        .px_5()
+                        .py_3()
+                        .bg(self.color(0xf9fafb))
+                        .border_b_1()
+                        .border_color(self.color(0xdce0e5))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("To:"))
+                        .child(div().flex_1().child(Input::new(&self.new_to)))
+                        .child(
+                            Button::new("compose-cancel")
+                                .label("Cancel")
+                                .ghost()
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.composing = false;
+                                    cx.notify()
+                                })),
+                        ),
+                )
+                .child(div().flex_1().p_5().text_color(self.color(MUTED)).child(
+                    "Your Mac sends this through Messages, as a text from your phone number.",
+                ))
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(self.color(0xdce0e5))
+                        .p_3()
+                        .child(
+                            div()
+                                .h_flex()
+                                .gap_2()
+                                .child(div().flex_1().child(Input::new(&self.reply)))
+                                .child(
+                                    Button::new("compose-send")
+                                        .primary()
+                                        .label(if self.sending { "Sending…" } else { "Send" })
+                                        .disabled(self.sending)
+                                        .on_click(cx.listener(|s, _, w, cx| s.send_reply(w, cx))),
+                                ),
+                        ),
+                );
+        }
         let entry = thread
             .and_then(|t| t.contact.as_ref())
             .and_then(|c| self.cards.get(c));
@@ -1591,15 +1716,24 @@ impl Dashboard {
     /// Sends the typed reply through Messages, then keeps a sealed copy in this archive.
     fn send_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.reply.read(cx).value().trim().to_string();
-        let (Some(key), Some(to)) = (
-            self.session_key.clone(),
+        let to = if self.composing {
+            let to = self.new_to.read(cx).value().trim().to_string();
+            if !to.chars().any(|c| c.is_ascii_digit() || c == '@') {
+                self.notice = "Enter a phone number or email address to text.".into();
+                cx.notify();
+                return;
+            }
+            Some(to)
+        } else {
             self.threads
                 .iter()
                 .find(|t| Some(&t.key) == self.selected.as_ref())
-                .map(|t| t.title.clone()),
-        ) else {
+                .map(|t| t.title.clone())
+        };
+        let (Some(key), Some(to)) = (self.session_key.clone(), to) else {
             return;
         };
+        let new_thread = self.composing.then(|| to.clone());
         if text.is_empty() || self.sending {
             return;
         }
@@ -1635,6 +1769,10 @@ impl Dashboard {
                 match sent {
                     Ok(()) => {
                         s.notice = "Sent.".into();
+                        if let Some(to) = new_thread {
+                            s.composing = false;
+                            s.selected = Some(to);
+                        }
                         s.hosted_seen = None;
                         s.reply.update(cx, |i, cx| i.set_value("", window, cx));
                         s.refresh();
@@ -1709,10 +1847,14 @@ impl Render for Dashboard {
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Desktop shortcuts launch this GUI binary directly. The CLI owns archive initialization.
-    if std::env::args_os().len() == 1 {
+    let at_login = std::env::args_os().nth(1).is_some_and(|a| a == login::ARG);
+    if std::env::args_os().len() == 1 || (at_login && std::env::args_os().len() == 2) {
         let path = std::env::current_exe()?
             .with_file_name(format!("psms{}", std::env::consts::EXE_SUFFIX));
         let mut cli = std::process::Command::new(path);
+        if at_login {
+            cli.env(login::ENV, "1");
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1851,6 +1993,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let search =
                         cx.new(|cx| InputState::new(window, cx).placeholder("Search this page"));
                     let reply = cx.new(|cx| InputState::new(window, cx).placeholder("Message"));
+                    let new_to = cx.new(|cx| InputState::new(window, cx).placeholder("Phone number or email"));
                     let card_fields = ["Name", "Company", "Job title", "Notes"]
                         .map(|hint| cx.new(|cx| InputState::new(window, cx).placeholder(hint)));
                     let endpoint = cx.new(|cx| {
@@ -2039,7 +2182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .detach();
                         let storage_file=cx.new(|cx|InputState::new(window,cx).placeholder("Path to private connection file"));
                         let form=connect::Form::new(&db,&endpoint,window,cx);
-                        let mut s = Dashboard {form, update:None, updating:false, checking:false, update_status:"Waiting to check.".into(), checked_at:None,
+                        let mut s = Dashboard {form, update:None, updating:false, checking:false, auto_update:login::launched_at_login(), update_status:"Waiting to check.".into(), checked_at:None,
                             storage_engine:None,storage_file,migrating:false,
                             db,
                             external, external_page:None, external_newest:0,
@@ -2080,6 +2223,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             settings_search,
                             settings_path: settings_path.clone(),
                             contacts_done: Default::default(),
+                            alert_seen: Default::default(),
+                            alert_source: None,
                             contacts_full_at: None,
                             reading_shown: Default::default(),
                             expiry: Some(30),
@@ -2102,6 +2247,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             email_rows: Vec::new(),
                             card_photo: None,
                             reply,
+                            composing: false,
+                            new_to,
                             sending: false,
                         };
                         if s.screen==Screen::Setup && s.step==1 {s.detect_domain(window,cx);}
