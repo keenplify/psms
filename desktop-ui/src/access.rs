@@ -422,14 +422,14 @@ impl Dashboard {
 }
 
 impl Dashboard {
-    /// papamo.dev Pro for this self-hosted archive: phones without a tunnel, an off-site backup,
+    /// papamo.dev Plus for this self-hosted archive: phones without a tunnel, an off-site backup,
     /// the web inbox, teams and managed webhooks. Status is read here; changes go through the API.
     fn cloud_view(&self, cx: &mut Context<Self>) -> Div {
         let mut view = div()
             .v_flex()
             .gap_2()
             .min_w_0()
-            .child(self.heading("papamo.dev Pro"));
+            .child(self.heading("papamo.dev Plus"));
         if self.external {
             return view.child(
                 self.caption("Connecting to papamo.dev works with the built-in SQLite archive."),
@@ -453,7 +453,7 @@ impl Dashboard {
         let Some((synced, error, pushed, pulled)) = link else {
             return view
                 .child(self.caption(
-                    "With a Pro plan, connect this archive to papamo.dev: your phone sends there with no tunnel, this archive keeps a sealed off-site backup, and you can read, reply and share it from any browser. Everything stays sealed with your archive key.",
+                    "With a Plus plan, connect this archive to papamo.dev: your phone sends there with no tunnel, this archive keeps a sealed off-site backup, and you can read, reply and share it from any browser. Everything stays sealed with your archive key.",
                 ))
                 .child(
                     div().h_flex().child(
@@ -522,7 +522,7 @@ impl Dashboard {
                     let account = attempt.wait().map_err(String::from)?;
                     let token = relay::computer_token(&account.token)?;
                     api.connect_cloud(&token)
-                        .map_err(|_| "papamo.dev did not accept this archive. Connecting needs a Pro plan.".to_string())
+                        .map_err(|_| "papamo.dev did not accept this archive. Connecting needs a Plus plan.".to_string())
                 })
                 .await;
             let _ = this.update_in(cx, |s, window, cx| {

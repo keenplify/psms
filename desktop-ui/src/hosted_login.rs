@@ -25,6 +25,8 @@ pub struct Account {
     pub username: String,
     pub used: u64,
     pub limit: Option<u64>,
+    /// True on Plus or Enterprise (or for admins), which can sync a self-hosted archive.
+    pub plus: bool,
 }
 
 impl Attempt {
@@ -167,6 +169,7 @@ impl Attempt {
                 .into(),
             used: me["used"].as_u64().ok_or("Missing archive usage.")?,
             limit: me["limit"].as_u64(),
+            plus: me["admin"] == true || me["plan"]["id"].as_str().is_some_and(|p| p != "free"),
             token: bearer.into(),
         })
     }

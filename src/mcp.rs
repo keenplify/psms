@@ -392,7 +392,7 @@ impl Inbox {
             .to_string())
     }
     #[tool(
-        description = "Show whether this self-hosted archive is connected to papamo.dev Pro, when it last synced, and how many messages it backed up and received."
+        description = "Show whether this self-hosted archive is connected to papamo.dev Plus, when it last synced, and how many messages it backed up and received."
     )]
     async fn cloud_status(&self) -> Result<String, String> {
         Ok(self.get("/cloud", &[]).await?.to_string())

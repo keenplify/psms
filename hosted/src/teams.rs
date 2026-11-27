@@ -1,4 +1,4 @@
-//! Team inboxes (Pro): an owner adds other Papamo accounts as members. Members open the
+//! Team inboxes (Plus): an owner adds other Papamo accounts as members. Members open the
 //! owner's inbox with the `x-psms-inbox` header and read it with the owner's recovery words.
 use crate::{App, DOWN, Failure, Reply, identity, plans};
 use axum::{

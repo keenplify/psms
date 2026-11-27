@@ -204,29 +204,82 @@ impl Dashboard {
 
     pub fn database_view(&self, cx: &mut Context<Self>) -> Div {
         let mut choices = div().v_flex().gap_3();
-        if self.form.account.is_some() {
+        if let Some(account) = &self.form.account {
+            // Someone who already set up pSMS online, or already keeps texts on this Mac, chooses
+            // which one this app shows, so nothing is set up twice.
+            let online = account.used;
+            let here: i64 = self
+                .db
+                .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap_or(0);
+            let (title, detail) = match (online > 0, here > 0) {
+                (true, true) => (
+                    "You have texts in two places".to_string(),
+                    format!("Your papamo.dev inbox has {online} messages and this Mac's archive has {here}. Choose which one this app shows. The other stays as it is."),
+                ),
+                (true, false) => (
+                    "You already set up pSMS online".to_string(),
+                    format!("Your papamo.dev inbox has {online} messages. Keep using it here, or start a separate archive on this Mac."),
+                ),
+                (false, true) => (
+                    "This Mac already has an archive".to_string(),
+                    format!("This Mac's archive has {here} messages. Keep using it, or switch this app to your papamo.dev inbox."),
+                ),
+                (false, false) => (
+                    "Where should your texts go?".to_string(),
+                    "papamo.dev keeps them for you and needs no setup on this Mac. Self-hosting keeps them only on this Mac.".to_string(),
+                ),
+            };
+            let hosted_label = if online > 0 {
+                format!("Continue with my papamo.dev inbox ({online} messages)")
+            } else {
+                "Use papamo.dev".to_string()
+            };
+            let local_label = if self.form.manual_open {
+                "Hide self-hosted setup".to_string()
+            } else if here > 0 {
+                format!("Keep this Mac's archive ({here} messages)")
+            } else {
+                "Self-host on this Mac instead".to_string()
+            };
             choices = choices
                 .child(
-                    button("hosted-db", "Use my papamo.dev inbox")
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(self.caption(detail))
+                .child(
+                    Button::new("hosted-db")
+                        .label(hosted_label)
                         .primary()
                         .disabled(self.form.busy)
                         .on_click(cx.listener(|s, _, _, cx| s.pair_hosted(cx))),
                 )
                 .child(
-                    button(
-                        "manual-connection",
-                        if self.form.manual_open {
-                            "Hide manual setup"
+                    Button::new("plus-sync")
+                        .label(if account.plus {
+                            "Self-host and sync with papamo.dev"
                         } else {
-                            "Use my own database"
-                        },
-                    )
-                    .icon(IconName::Network)
-                    .disabled(self.form.busy)
-                    .on_click(cx.listener(|s, _, _, cx| {
-                        s.form.manual_open = !s.form.manual_open;
-                        cx.notify();
-                    })),
+                            "Self-host and sync with papamo.dev (Plus)"
+                        })
+                        .icon(IconName::Globe)
+                        .disabled(self.form.busy)
+                        .on_click(cx.listener(|s, _, _, cx| s.self_host_with_sync(cx))),
+                )
+                .child(self.caption(
+                    "Plus keeps your texts on this Mac and still gives you the web inbox, a sealed backup and phones that need no tunnel.",
+                ))
+                .child(
+                    Button::new("manual-connection")
+                        .label(local_label)
+                        .icon(IconName::Network)
+                        .disabled(self.form.busy)
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.form.manual_open = !s.form.manual_open;
+                            cx.notify();
+                        })),
                 );
         }
         if self.form.account.is_none() || self.form.manual_open {
@@ -275,6 +328,51 @@ impl Dashboard {
         })
         .detach();
     }
+    /// Keeps the archive on this Mac and connects it to papamo.dev, which needs Plus.
+    fn self_host_with_sync(&mut self, cx: &mut Context<Self>) {
+        let Some(account) = &self.form.account else {
+            return;
+        };
+        if !account.plus {
+            cx.open_url("https://www.papamo.dev/sms#plans");
+            self.notice = "Syncing a self-hosted archive with papamo.dev is part of Plus. Once your account has Plus, choose this again. Until then you can self-host on this Mac below.".into();
+            self.form.manual_open = true;
+            cx.notify();
+            return;
+        }
+        let Some(api) = self.api() else {
+            self.notice = "Start the archive service, then try again.".into();
+            cx.notify();
+            return;
+        };
+        let token = account.token.clone();
+        self.form.busy = true;
+        self.notice = "Connecting this Mac's archive to papamo.dev…".into();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let computer = crate::relay::computer_token(&token)?;
+                    api.connect_cloud(&computer)
+                        .map_err(|_| "papamo.dev did not accept this archive. Check that your account has Plus.".to_string())
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.form.busy = false;
+                match result {
+                    Ok(()) => {
+                        s.finish(cx);
+                        s.notice = "This Mac's archive now syncs with papamo.dev: phones can send there with no tunnel, and you can read it in any browser.".into();
+                    }
+                    Err(e) => s.notice = e,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Uses the papamo.dev inbox. Phones connect there with one shared shortcut and the
     /// account's own recovery key, so the desktop never makes a second shortcut or key. If a
     /// phone is already connected, setup is done; otherwise the inbox's QR pairing opens.

@@ -77,7 +77,7 @@ ALTER TABLE plans ADD COLUMN IF NOT EXISTS sort integer NOT NULL DEFAULT 0;
 UPDATE plans SET sort=0, max_phones=3, perks=ARRAY['Your latest 100 encrypted messages; the oldest unstarred ones make room for new texts','Up to 3 phones','Reply from anywhere with pSMS for Mac','Contact cards, read status and stars','Browser autofill for one-time codes','100 API calls every 30 minutes'] WHERE id='free' AND perks='{}';
 UPDATE plans SET sort=1, monthly_price_cents=300, price_label='Coming soon', perks=ARRAY['Unlimited messages, kept until you delete them','Unlimited phones and Macs','Unlimited API calls','Webhooks when a text arrives','Everything in Free'] WHERE id='plus' AND perks='{}';
 UPDATE plans SET sort=2, price_label='Contact us', perks=ARRAY['Everything in Plus','Team inboxes for shared numbers','Custom retention and data residency','Priority support'] WHERE id='enterprise' AND perks='{}';
--- Pro features for self-hosted archives and teams.
+-- Plus features for self-hosted archives and teams.
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS self_host_sync boolean NOT NULL DEFAULT false;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS teams boolean NOT NULL DEFAULT false;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS pro_features_seeded boolean NOT NULL DEFAULT false;
@@ -97,9 +97,9 @@ UPDATE plans SET message_limit=5000,
 UPDATE plans SET perks=array_replace(perks,'Everything in Plus','Everything in Plus, with the message capacity you need')
   WHERE id='enterprise' AND NOT capacity_seeded;
 UPDATE plans SET capacity_seeded=true WHERE NOT capacity_seeded;
--- Pro perks for self-hosted archives, teams and managed webhooks (set once; admins edit after).
+-- Plus perks for self-hosted archives, teams and managed webhooks (set once; admins edit after).
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS pro_perks_seeded boolean NOT NULL DEFAULT false;
-UPDATE plans SET name='Pro', perks=ARRAY[
+UPDATE plans SET name='Plus', perks=ARRAY[
   'Your latest 5,000 messages; the oldest unstarred ones make room for new texts',
   'Connect a self-hosted archive: phones need no tunnel, with a sealed off-site backup and restore',
   'Read and reply from any browser, even while your Mac is off; replies send when it is back',
@@ -107,8 +107,11 @@ UPDATE plans SET name='Pro', perks=ARRAY[
   'Managed webhooks with retries, a delivery log and replay',
   'Unlimited phones, Macs and API calls',
   'Everything in Free'] WHERE id='plus' AND NOT pro_perks_seeded;
-UPDATE plans SET perks=ARRAY['Everything in Pro','Message capacity sized to your team','Priority support'] WHERE id='enterprise' AND NOT pro_perks_seeded;
+UPDATE plans SET perks=ARRAY['Everything in Plus','Message capacity sized to your team','Priority support'] WHERE id='enterprise' AND NOT pro_perks_seeded;
 UPDATE plans SET pro_perks_seeded=true WHERE NOT pro_perks_seeded;
+-- The paid plan is called Plus.
+UPDATE plans SET name='Plus' WHERE id='plus' AND name='Pro';
+UPDATE plans SET perks=array_replace(perks,'Everything in Pro','Everything in Plus');
 -- Effective limits for each account. Admins are unlimited whatever their plan.
 CREATE OR REPLACE VIEW archive_quota AS
  SELECT a.id, CASE WHEN admin.yes THEN NULL::bigint ELSE coalesce(a.message_limit_override, p.message_limit) END AS message_limit,

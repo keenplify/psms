@@ -1,4 +1,4 @@
-//! Connects this self-hosted archive to a papamo.dev Pro account. The service reaches out to
+//! Connects this self-hosted archive to a papamo.dev Plus account. The service reaches out to
 //! papamo.dev, so nothing here needs a tunnel or public address:
 //! - phones send to papamo.dev, and new messages are pulled down here (webhooks fire as usual);
 //! - this archive's messages are pushed up as a sealed, off-site backup that also feeds the web
@@ -98,7 +98,7 @@ async fn connect(
         402 => {
             return Err(fail(
                 StatusCode::PAYMENT_REQUIRED,
-                "Connecting a self-hosted archive needs a Papamo Pro plan.",
+                "Connecting a self-hosted archive needs a Papamo Plus plan.",
             ));
         }
         401 | 403 => {

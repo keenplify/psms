@@ -91,7 +91,7 @@ impl Api {
         )
         .map(drop)
     }
-    /// Connects this archive to papamo.dev Pro with a computer token.
+    /// Connects this archive to papamo.dev Plus with a computer token.
     pub fn connect_cloud(&self, token: &str) -> Result<(), ()> {
         self.call(
             reqwest::Method::PUT,

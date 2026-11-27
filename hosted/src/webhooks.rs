@@ -1,4 +1,4 @@
-//! Managed webhooks (Pro): Papamo tells your service when a message arrives, retries with
+//! Managed webhooks (Plus): Papamo tells your service when a message arrives, retries with
 //! backoff, keeps a delivery log and replays on request. Payloads carry IDs only, never
 //! message contents; the receiver fetches the sealed message with its own token.
 use crate::{App, DOWN, Failure, Reply, identity, plans};

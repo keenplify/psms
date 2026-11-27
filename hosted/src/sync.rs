@@ -1,4 +1,4 @@
-//! Connects a self-hosted archive to papamo.dev (Pro). The self-hosted service pushes its sealed
+//! Connects a self-hosted archive to papamo.dev (Plus). The self-hosted service pushes its sealed
 //! messages here as an off-site backup and for the web inbox, and pulls down what phones sent
 //! here, so phones need no tunnel to reach it. Everything stays sealed with the archive key.
 use crate::{App, DOWN, Failure, Reply, encryption, identity, plans};

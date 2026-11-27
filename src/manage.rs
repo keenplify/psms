@@ -46,7 +46,7 @@ pub enum Action {
         #[command(subcommand)]
         command: Devices,
     },
-    /// Connect this archive to papamo.dev Pro: phones without a tunnel, backup, web inbox and teams.
+    /// Connect this archive to papamo.dev Plus: phones without a tunnel, backup, web inbox and teams.
     Cloud {
         #[command(subcommand)]
         command: Cloud,
