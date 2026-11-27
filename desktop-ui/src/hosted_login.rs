@@ -208,6 +208,28 @@ fn client() -> Result<reqwest::Client, &'static str> {
         .map_err(|_| "Cannot connect to Papamo.")
 }
 
+/// Whether this papamo.dev account already has a phone sending to it.
+pub fn has_phone(token: &str) -> Result<bool, &'static str> {
+    runtime()?.block_on(async {
+        let list: serde_json::Value = client()?
+            .get("https://na.sms.papamo.dev/free/v1/phones")
+            .bearer_auth(token)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(|_| "Could not check your phones. Try signing in again.")?
+            .json()
+            .await
+            .map_err(|_| "Invalid phone list.")?;
+        Ok(list["phones"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|p| p["kind"] != "computer"))
+    })
+}
+
+#[allow(dead_code)]
 pub fn pair(token: &str, folder: &std::path::Path, username: &str) -> Result<(), &'static str> {
     runtime()?.block_on(async {
         let payload: serde_json::Value = client()?

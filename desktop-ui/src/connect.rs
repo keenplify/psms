@@ -207,7 +207,7 @@ impl Dashboard {
         if self.form.account.is_some() {
             choices = choices
                 .child(
-                    button("hosted-db", "Use my Papamo hosted database")
+                    button("hosted-db", "Use my papamo.dev inbox")
                         .primary()
                         .disabled(self.form.busy)
                         .on_click(cx.listener(|s, _, _, cx| s.pair_hosted(cx))),
@@ -275,43 +275,33 @@ impl Dashboard {
         })
         .detach();
     }
+    /// Uses the papamo.dev inbox. Phones connect there with one shared shortcut and the
+    /// account's own recovery key, so the desktop never makes a second shortcut or key. If a
+    /// phone is already connected, setup is done; otherwise the inbox's QR pairing opens.
     fn pair_hosted(&mut self, cx: &mut Context<Self>) {
         let Some(account) = &self.form.account else {
             return;
         };
         let token = account.token.clone();
-        let username = account.username.clone();
-        let folder = self
-            .path
-            .with_file_name(format!("pSMS-pairing-{}", uuid::Uuid::new_v4()));
         self.form.busy = true;
-        self.notice = "Preparing your hosted shortcut…".into();
+        self.notice = "Checking your papamo.dev inbox…".into();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(
-                    async move { hosted_login::pair(&token, &folder, &username).map(|_| folder) },
-                )
+                .spawn(async move { hosted_login::has_phone(&token) })
                 .await;
             let _ = this.update(cx, |s, cx| {
                 s.form.busy = false;
                 match result {
-                    Ok(folder) => {
-                        if s.db
-                            .execute(
-                                "UPDATE desktop_setup SET folder=?1,step=2 WHERE id=1",
-                                [folder.to_string_lossy().as_ref()],
-                            )
-                            .is_ok()
-                        {
-                            s.folder = Some(folder);
-                            s.step = 2;
-                            s.reached = s.reached.max(2);
-                            s.notice.clear();
-                        } else {
-                            s.notice = format!("Shortcut saved in {}", folder.display());
-                        }
+                    Ok(true) => {
+                        s.finish(cx);
+                        s.notice = "Your phone already sends to papamo.dev, so no new shortcut is needed. Read your texts at papamo.dev/sms/inbox, and turn on Settings → Reply from anywhere to reply from this Mac.".into();
+                    }
+                    Ok(false) => {
+                        cx.open_url("https://www.papamo.dev/sms/inbox#connect");
+                        s.finish(cx);
+                        s.notice = "Connect your iPhone in the browser tab that opened: scan the QR code and follow the steps there. Then turn on Settings → Reply from anywhere to reply from this Mac.".into();
                     }
                     Err(e) => s.notice = e.into(),
                 }
