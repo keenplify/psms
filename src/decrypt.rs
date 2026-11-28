@@ -43,6 +43,22 @@ fn open_json(key: &str, envelope: &str) -> Option<serde_json::Value> {
         .ok()?;
     serde_json::from_slice(&clear).ok()
 }
+/// Shown by the CLI and MCP server when the recovery key is for another archive.
+#[allow(dead_code)]
+pub const WRONG_KEY: &str = "This recovery key doesn't open this archive's messages. Use the key or recovery kit made for this archive.";
+
+/// True when `rows` hold sealed messages and the key opens none of them, so a wrong key is
+/// reported instead of an empty or locked result.
+#[allow(dead_code)]
+pub fn opens_none<'a>(key: &str, rows: impl IntoIterator<Item = &'a serde_json::Value>) -> bool {
+    let mut sealed = rows
+        .into_iter()
+        .filter(|r| r["sender"] == "papamo:encrypted:v1")
+        .filter_map(|r| r["body"].as_str())
+        .peekable();
+    sealed.peek().is_some() && sealed.all(|body| open_message(key, body).is_none())
+}
+
 /// Opens a listed message for the CLI and MCP server: its sender and text, plus what pSMS for
 /// Mac adds (direction, group chat, files, the message it replies to) and its tapbacks.
 #[allow(dead_code)]
@@ -132,6 +148,29 @@ mod tests {
                 .unwrap(),
         );
         STANDARD.encode(out)
+    }
+    #[test]
+    fn a_key_for_another_archive_is_reported() {
+        let mine = "0123456789abcdefghijklmnopqrstuv";
+        let other = "vutsrqponmlkjihgfedcba9876543210";
+        let row = |body: String| serde_json::json!({"sender":"papamo:encrypted:v1","body":body});
+        let rows = [
+            row(seal(mine, r#"{"sender":"Ana","body":"hi"}"#)),
+            row(seal(mine, r#"{"sender":"Ben","body":"yo"}"#)),
+        ];
+        assert!(!opens_none(mine, &rows));
+        assert!(opens_none(other, &rows));
+        // One readable message is enough, and nothing sealed means nothing to judge by.
+        let mixed = [
+            rows[0].clone(),
+            row(seal(other, r#"{"sender":"Cy","body":"x"}"#)),
+        ];
+        assert!(!opens_none(mine, &mixed));
+        assert!(!opens_none(
+            other,
+            &[serde_json::json!({"sender":"plain","body":"x"})]
+        ));
+        assert!(!opens_none(other, &[] as &[serde_json::Value]));
     }
     #[test]
     fn manual_shortcut_runs_read_as_setup_checks() {

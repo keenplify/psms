@@ -151,6 +151,15 @@ impl Inbox {
             .as_deref()
             .ok_or_else(|| "Contact cards need --key-file.".into())
     }
+    /// Fails a listing when the configured key opens none of its sealed messages.
+    fn check_key(&self, rows: &Value) -> Result<(), String> {
+        match (&self.key, rows.as_array()) {
+            (Some(key), Some(rows)) if crate::decrypt::opens_none(key, rows) => {
+                Err(crate::decrypt::WRONG_KEY.into())
+            }
+            _ => Ok(()),
+        }
+    }
     /// Decrypted contact cards by contact ID, when a key is configured.
     async fn cards(&self) -> std::collections::HashMap<String, Value> {
         let mut out = std::collections::HashMap::new();
@@ -229,6 +238,7 @@ impl Inbox {
             .get(&format!("/contacts/{id}/messages"), &query)
             .await?;
         let cards = self.cards().await;
+        self.check_key(&page["messages"])?;
         for item in page["messages"]
             .as_array_mut()
             .ok_or("Invalid history response")?
@@ -255,6 +265,7 @@ impl Inbox {
             params.push(("cursor".into(), c.to_string()))
         }
         let page = self.get("/messages", &params).await?;
+        self.check_key(&page["messages"])?;
         let cards = self.cards().await;
         let needle = q.text.map(|s| s.to_lowercase());
         let entries = page["messages"]

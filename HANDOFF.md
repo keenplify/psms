@@ -84,6 +84,7 @@ AGENTS.md asks every surface to match. Web is the hosted inbox at papamo.dev/sms
 | Feature | Web | Desktop | CLI | MCP |
 | --- | --- | --- | --- | --- |
 | Read conversations | Yes | Yes | `manage inbox` | search and get tools |
+| Report a recovery key made for another archive | Error on the unlock form; stays locked | Notice in the unlock box | `manage inbox list` and `show` fail with an error | search and history tools return an error |
 | Unlock with the 12 words or key | Yes | Yes | key file | key at launch |
 | Unlock with the recovery kit PDF | Yes | Yes | `--key-file` takes the PDF | `--key-file` takes the PDF |
 | Star messages | Yes: click a bubble or ☆, filter ★ | Yes | `manage inbox` | `update_message`, star filter |

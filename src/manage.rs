@@ -515,6 +515,11 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                     .as_deref()
                     .map(crate::kit::key_from_file)
                     .transpose()?;
+                if k.as_deref()
+                    .is_some_and(|k| decrypt::opens_none(k.trim_end(), [&entry]))
+                {
+                    return Err(decrypt::WRONG_KEY.into());
+                }
                 unlock(&mut entry, k.as_deref().map(str::trim_end));
                 println!("{entry}");
             }
@@ -543,6 +548,11 @@ pub async fn run(path: &Path, opts: &ServerOptions, action: Action) -> Result<()
                 let rows = page["messages"]
                     .as_array_mut()
                     .ok_or("Invalid archive response")?;
+                if k.as_deref()
+                    .is_some_and(|k| decrypt::opens_none(k.trim_end(), rows.iter()))
+                {
+                    return Err(decrypt::WRONG_KEY.into());
+                }
                 for row in rows.iter_mut() {
                     unlock(row, k.as_deref().map(str::trim_end));
                 }

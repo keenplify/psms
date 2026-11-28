@@ -73,6 +73,9 @@ with tempfile.TemporaryDirectory() as root:
   assert json.loads(manage("health"))["summary"]==health["summary"]
   out=Path(root)/"saved.bin";manage("inbox","save",gid,"--key-file",str(kf),"--out",str(out));assert out.read_bytes()==b'"photo bytes"'
   listed=json.loads(manage("inbox","list","--chat",chat,"--key-file",str(kf)))["messages"];assert listed[0]["body"]=="Look at this one" and listed[0]["reactions"][0]["kind"]=="love"
+  # A recovery key made for another archive is reported, not shown as locked or empty results.
+  wrong=Path(root)/"wrong.key";wrong.write_text("b"*32)
+  bad=subprocess.run(cli+["manage","inbox","list","--key-file",str(wrong)],capture_output=True,text=True);assert bad.returncode!=0 and "doesn't open this archive" in bad.stderr,bad.stderr
   # Devices-only send API: a send key from a private address queues texts, nothing else works.
   import socket,time,urllib.request,urllib.error
   sock=socket.socket();sock.bind(("127.0.0.1",0));port=sock.getsockname()[1];sock.close()
