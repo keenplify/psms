@@ -2,18 +2,20 @@
   if (window.top !== window || globalThis.psmsSuggestionInstalled) return;
   globalThis.psmsSuggestionInstalled=true;
   const api=globalThis.browser ?? chrome;
-  let field, host, timer, retry, stream, expiresTimer, generation=0;
+  let field, host, timer, retry, stream, expiresTimer, generation=0, filling=false;
   function clear(){
     generation++; clearInterval(timer); clearTimeout(retry); clearTimeout(expiresTimer); stream?.disconnect(); stream=null;
     host?.remove(); host=null; field=null;
   }
   const TEXTLIKE=["text","number","tel","password"];
-  // One box per digit: the 4-8 single-character boxes around this one.
+  // One box per digit: limited to one character, or unlimited but too narrow for more.
+  const single=i=>TEXTLIKE.includes(i.type) && (i.maxLength===1 || (i.maxLength<0 && i.offsetWidth>0 && i.offsetWidth<=64));
+  // The 4-8 single-character boxes around this one.
   function boxes(el){
-    if(!(el instanceof HTMLInputElement) || el.maxLength!==1 || !TEXTLIKE.includes(el.type)) return null;
+    if(!(el instanceof HTMLInputElement) || !single(el)) return null;
     let scope=el.parentElement;
     for(let up=0; scope && up<4; up++, scope=scope.parentElement){
-      const group=[...scope.querySelectorAll("input")].filter(i=>i.maxLength===1 && TEXTLIKE.includes(i.type) && !i.disabled);
+      const group=[...scope.querySelectorAll("input")].filter(i=>single(i) && !i.disabled);
       if(group.length>=4) return group.length<=8 ? group : null;
     }
     return null;
@@ -28,6 +30,64 @@
     if (boxes(el)) return true;
     if (/\botp\b|one[-_ ]?time|verif\w*|security[-_ ]?code|auth\w*[-_ ]?code|passcode|\b2fa\b|\bmfa\b|\bpin\b|sms[-_ ]?code|\bcode\b/i.test(label)) return true;
     return el.inputMode==="numeric" && el.maxLength>=4 && el.maxLength<=8;
+  }
+  const pause=()=>new Promise(done=>setTimeout(done,30));
+  const setValue=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+  // One keystroke, with the events a real key press sends, so pages that listen for keys follow along.
+  function press(box,digit,value){
+    box.focus();
+    // A page that cancels the key has put the digit in itself.
+    if(box.dispatchEvent(new KeyboardEvent("keydown",{key:digit,bubbles:true,cancelable:true}))
+      && box.dispatchEvent(new InputEvent("beforeinput",{data:digit,inputType:"insertText",bubbles:true,cancelable:true}))){
+      setValue.call(box,value);
+      box.dispatchEvent(new InputEvent("input",{data:digit,inputType:"insertText",bubbles:true}));
+    }
+    box.dispatchEvent(new KeyboardEvent("keyup",{key:digit,bubbles:true}));
+  }
+  function whole(box,value){
+    setValue.call(box,value);
+    box.dispatchEvent(new Event("input",{bubbles:true}));box.dispatchEvent(new Event("change",{bubbles:true}));
+  }
+  const digits=text=>text.replace(/\D/g,"");
+  // Types the code one digit at a time. Pages that redraw their boxes after every digit, or keep
+  // one character per keystroke, lose all but one digit when the whole code arrives at once.
+  async function fill(el,code){
+    filling=true;
+    try{
+      let group=boxes(el);
+      // Filled once: don't offer the same field again unless it is focused by hand.
+      for(const box of group ?? [el]) dismissed.add(box);
+      if(group && group.length===code.length){
+        for(let i=0;i<code.length;i++){
+          if(!group[i]?.isConnected) group=boxes(document.activeElement);
+          if(!group || group.length!==code.length) break;
+          press(group[i],code[i],code[i]);
+          await pause();
+        }
+        group=group?.every(box=>box.isConnected) ? group : boxes(document.activeElement);
+        if(group && group.map(box=>box.value).join("")!==code){
+          // Last resort: most code boxes spread a pasted code across themselves.
+          for(const box of group) if(box.value) whole(box,"");
+          const data=new DataTransfer(); data.setData("text/plain",code);
+          group[0].focus();
+          group[0].dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}));
+          await pause();
+        }
+        (group?.at(-1) ?? el).focus();
+        return;
+      }
+      // One field, or boxes the page moves between itself: type it, following the page's focus.
+      el.focus();
+      for(const digit of code){
+        const active=document.activeElement;
+        const box=active instanceof HTMLInputElement && TEXTLIKE.includes(active.type) ? active : el;
+        press(box,digit,box.maxLength===1?digit:box.value+digit);
+        await pause();
+      }
+      if(el.isConnected) el.dispatchEvent(new Event("change",{bubbles:true}));
+      // Then put the cursor there, so pressing Return submits the code.
+      if(el.isConnected && !boxes(el)) el.focus();
+    } finally { setTimeout(()=>{filling=false},100) }
   }
   function position(){
     if(!host || !field) return;
@@ -46,7 +106,7 @@
     button.style.cssText="display:grid;gap:2px;min-width:144px;max-width:250px;padding:6px 14px;border:1px solid #c4c5cb;border-radius:9px;background:#f7f6fb;color:#202126;box-shadow:0 3px 12px #1414222b;font:500 12px system-ui;cursor:pointer";
     if(matchMedia("(prefers-color-scheme: dark)").matches){button.style.background="#34363d";button.style.color="#f5f5f7";button.style.borderColor="#555861"}
     const caption=document.createElement("span");
-    caption.textContent=(data.verified?"Autofill from ":"Code from ")+data.sender+(data.verified?"":" · not site-checked");
+    caption.textContent=(data.verified?"Autofill from ":"Code from ")+data.sender;
     const code=document.createElement("strong");
     code.textContent=data.code.length===6?data.code.slice(0,3)+" "+data.code.slice(3):data.code;
     code.style.cssText="font:600 17px system-ui;font-variant-numeric:tabular-nums";
@@ -54,22 +114,14 @@
     button.onpointerdown=e=>e.preventDefault();
     button.onclick=e=>{
       if(!e.isTrusted || Date.now()>=data.expires || !el.isConnected || !eligible(el) || document.visibilityState!=="visible"){clear();return}
-      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
-      const group=boxes(el);
-      const targets=group && group.length===data.code.length ? group.map((box,i)=>[box,data.code[i]]) : [[el,data.code]];
-      for(const [box,value] of targets){
-        set.call(box,value);
-        box.dispatchEvent(new Event("input",{bubbles:true}));box.dispatchEvent(new Event("change",{bubbles:true}));
-      }
       clear();
-      // Then put the cursor there, so pressing Return submits the code.
-      (targets.at(-1)?.[0] ?? el).focus();
+      void fill(el,data.code);
     };
     root.append(button);document.documentElement.append(host);position();
     expiresTimer=setTimeout(clear,Math.max(0,data.expires-Date.now()));
   }
   function focus(el){
-    if(el===host)return;
+    if(el===host || filling)return;
     clear();
     if(!eligible(el)||document.visibilityState!=="visible")return;
     field=el; const current=generation;
@@ -114,7 +166,7 @@
   const visible=el=>{const r=el.getBoundingClientRect();return r.width>0 && r.height>0 && r.bottom>0 && r.top<innerHeight && getComputedStyle(el).visibility!=="hidden"};
   // No click needed: show the suggestion under the first code field on screen.
   function scan(){
-    if(host || field || document.visibilityState!=="visible") return;
+    if(host || field || filling || document.visibilityState!=="visible") return;
     const fields=[...document.querySelectorAll("input")].filter(el=>!dismissed.has(el) && eligible(el) && visible(el));
     const pick=fields.find(el=>el.autocomplete.includes("one-time-code")) ?? fields[0];
     if(pick) focus(pick);
@@ -122,7 +174,7 @@
   let scanTimer;
   const later=()=>{clearTimeout(scanTimer);scanTimer=setTimeout(scan,400)};
   new MutationObserver(later).observe(document.documentElement,{childList:true,subtree:true});
-  document.addEventListener("focusin",e=>{if(e.target===host)return;dismissed.delete(e.target);if(eligible(e.target) && e.target!==field)focus(e.target)},true);
+  document.addEventListener("focusin",e=>{if(e.target===host || filling)return;dismissed.delete(e.target);if(eligible(e.target) && e.target!==field)focus(e.target)},true);
   document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")later();else clear()});
   document.addEventListener("input",e=>{if(e.target===field && field.value)clear()},true);
   document.addEventListener("keydown",e=>{if(e.key==="Escape" && field){dismissed.add(field);clear()}},true);
