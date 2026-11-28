@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "pSMS Autofill",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fill a verification code from your own encrypted pSMS inbox.",
   "action": {
     "default_popup": "popup.html",
